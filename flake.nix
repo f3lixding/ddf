@@ -24,6 +24,7 @@
 
         zig = pkgs.zigpkgs."0.16.0";
         zls = pkgs.zls_0_16;
+        # this is needed because this affects libc
         zigTarget =
           if pkgs.stdenv.isLinux then
             "${pkgs.stdenv.hostPlatform.system}-gnu"
