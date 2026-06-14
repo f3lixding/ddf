@@ -1,5 +1,7 @@
 # TODO
-- [ ] Render interface
+- [ ] Input parser
+- [ ] Logger
+- [ ] Main app loop scaffolding
 - [ ] Single component for rendering diff
 - [ ] Refine arg sets 
 
