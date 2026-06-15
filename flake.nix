@@ -62,12 +62,10 @@
 
             nativeBuildInputs = [
               zig.hook
-              pkgs.zig-config
+              pkgs.pkg-config
             ];
 
-            buildInputs = [
-              notcursesPatched
-            ];
+            buildInputs = librariesToInclude;
 
             zigBuildFlags = [
               "-Dtarget=${zigTarget}"
@@ -90,6 +88,7 @@
             zls
             notcursesPatched
             pkg-config
+            patchelfUnstable
 
             (writeShellScriptBin "zig-build" ''
               set -euo pipefail
@@ -98,8 +97,11 @@
               NC_DEV_LIBRARY_PATH=${lib.makeLibraryPath librariesToInclude}
 
               zig build \
-                -Drpath="$NC_DEV_LIBRARY_PATH" "$@" \
-                -Dbin-name=${binName}
+                -Drpath="$NC_DEV_LIBRARY_PATH" \
+                -Dinterpreter="$NC_DEV_LOADER" \
+                -Dpatchelf=${patchelfUnstable}/bin/patchelf \
+                -Dbin-name=${binName} \
+                "$@"
               ${patchelfUnstable}/bin/patchelf \
                 --set-interpreter "$NC_DEV_LOADER" \
                 zig-out/bin/${binName}

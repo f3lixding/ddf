@@ -5,6 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const bin_name = b.option([]const u8, "bin-name", "bin name") orelse "df";
     const rpaths = b.option([]const u8, "rpath", "rpath to add");
+    const interpreter = b.option([]const u8, "interpreter", "ELF interpreter to set with patchelf");
+    const patchelf = b.option([]const u8, "patchelf", "patchelf executable") orelse "patchelf";
 
     const exe = b.addExecutable(.{
         .name = bin_name,
@@ -24,6 +26,16 @@ pub fn build(b: *std.Build) void {
     linkNc(exe);
     addNixRPath(exe, rpaths);
 
+    if (interpreter) |interp| {
+        const patch_exe = b.addSystemCommand(&.{
+            patchelf,
+            "--set-interpreter",
+            interp,
+        });
+        patch_exe.addFileArg(exe.getEmittedBin());
+        exe.step.dependOn(&patch_exe.step);
+    }
+
     b.installArtifact(exe);
 
     const unit_tests = b.addTest(.{
@@ -41,6 +53,15 @@ pub fn build(b: *std.Build) void {
     addNixRPath(unit_tests, rpaths);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
+    if (interpreter) |interp| {
+        const patch_tests = b.addSystemCommand(&.{
+            patchelf,
+            "--set-interpreter",
+            interp,
+        });
+        patch_tests.addFileArg(unit_tests.getEmittedBin());
+        run_unit_tests.step.dependOn(&patch_tests.step);
+    }
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
