@@ -38,7 +38,7 @@ pub fn init(
         return error.IncorrectOption;
     }
 
-    // We set a hard floor of 60 hz
+    // We set a hard ceiling of 60 hz
     const interval_ms: i64 = @max(@divTrunc(std.time.ms_per_s, opts.sampling_rate), 16);
     const sampling_interval = std.Io.Duration.fromMilliseconds(interval_ms);
     return .{

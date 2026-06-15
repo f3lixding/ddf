@@ -3,6 +3,12 @@ const Io = std.Io;
 
 const util = @import("util.zig");
 const c = util.c;
+const logging = @import("logging.zig");
+
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+    .logFn = logging.logFn,
+};
 
 const Opts = struct {
     const Self = @This();
@@ -42,6 +48,10 @@ pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args;
 
     const io = init.io;
+    try logging.init(io, "/tmp/df.log");
+    defer logging.deinit(io);
+
+    std.log.info("started", .{});
     var buf: [256]u8 = undefined;
     const stdout = std.Io.File.stdout();
     var stdout_writer = std.Io.File.writer(stdout, io, &buf);
