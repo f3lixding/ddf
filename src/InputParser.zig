@@ -4,7 +4,7 @@ const util = @import("util.zig");
 const c = util.c;
 // TODO: replace this stub with a real type
 const Msg = enum {};
-const Sender = util.LockFreeSpsc(Msg).Sender;
+const Sender = util.Spsc(Msg).Sender;
 
 const Self = @This();
 
@@ -66,6 +66,9 @@ pub fn deinit(self: *Self, io: std.Io) void {
 /// Note that this loop does _not_ block indefinitely for an input
 /// This is because we need to accommodate for a cancellation point
 pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
+    const log = std.log.scoped(.input_parser);
+    _ = log;
+
     var input = std.mem.zeroes(c.ncinput);
 
     while (true) {
@@ -80,7 +83,7 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
 
 test "init" {
     const alloc = std.testing.allocator;
-    const channel = try util.LockFreeSpsc(Msg).init(alloc, 2);
+    const channel = try util.Spsc(Msg).init(alloc, 2);
     defer channel.deinit();
 
     // Do not initialize real notcurses in the Zig test runner: the runner uses

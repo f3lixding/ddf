@@ -12,7 +12,7 @@ pub const c = @cImport({
 /// A SPSC (single producer, single consumer)
 /// The sender is supposed to be owned by one thread and one thread only
 /// For that reason there is no need to compare
-pub fn LockFreeSpsc(
+pub fn Spsc(
     comptime T: type,
 ) type {
     return struct {
@@ -27,7 +27,9 @@ pub fn LockFreeSpsc(
                 const tail = inner.tail.load(.monotonic);
                 const head = inner.head.load(.acquire);
                 const cap = inner.buf.len;
-                const buffer_full = cap == (tail - head);
+                // head and tail are monotonic ring counters. They are allowed
+                // to wrap, so compute the occupancy with wrapping arithmetic.
+                const buffer_full = cap == (tail -% head);
 
                 if (!sender_alive or !receiver_alive) {
                     return error.ChannelClosed;
@@ -37,8 +39,10 @@ pub fn LockFreeSpsc(
 
                 const slot = tail % cap;
                 inner.buf[slot] = pkg;
-                inner.tail.store(tail + 1, .release);
+                inner.tail.store(tail +% 1, .release);
 
+                // This is only a futex epoch. Wrapping is acceptable; waiters
+                // only care that the value changes before they are woken.
                 _ = inner.not_empty.fetchAdd(1, .release);
                 io.futexWake(u32, &inner.not_empty.raw, 1);
             }
@@ -52,6 +56,8 @@ pub fn LockFreeSpsc(
             }
 
             pub fn recvWithTimeout(self: @This(), io: std.Io, timeout_ms: i64) !T {
+                if (timeout_ms < 0) return error.InvalidTimeout;
+
                 const inner = self.inner;
 
                 const sender_alive = inner.sender_alive.load(.monotonic);
@@ -68,7 +74,7 @@ pub fn LockFreeSpsc(
                 if (head < tail) {
                     const slot = head % cap;
                     const res = inner.buf[slot];
-                    _ = inner.head.fetchAdd(1, .release);
+                    inner.head.store(head +% 1, .release);
                     return res;
                 }
 
@@ -87,7 +93,7 @@ pub fn LockFreeSpsc(
 
                 const slot = head % cap;
                 const res = inner.buf[slot];
-                _ = inner.head.fetchAdd(1, .release);
+                inner.head.store(head +% 1, .release);
 
                 return res;
             }
@@ -121,6 +127,9 @@ pub fn LockFreeSpsc(
 
         pub fn init(alloc: std.mem.Allocator, init_cap: usize) !Channel {
             if (init_cap == 0) return error.ZeroCapacity;
+            // The wrapped distance `tail -% head` is unambiguous only if the
+            // ring capacity is at most half the counter range.
+            if (init_cap > (std.math.maxInt(usize) / 2)) return error.CapacityTooLarge;
 
             var buf = try std.ArrayList(T).initCapacity(alloc, init_cap);
             const slice = buf.allocatedSlice();
@@ -137,29 +146,29 @@ pub fn LockFreeSpsc(
     };
 }
 
-test "lock free spsc rejects zero capacity" {
+test "spsc rejects zero capacity" {
     try std.testing.expectError(
         error.ZeroCapacity,
-        LockFreeSpsc(i32).init(std.testing.allocator, 0),
+        Spsc(i32).init(std.testing.allocator, 0),
     );
 }
 
-test "lock free spsc recv with timeout returns timeout when empty" {
+test "spsc recv with timeout returns timeout when empty" {
     const io = std.Options.debug_io;
     const test_alloc = std.testing.allocator;
 
-    const channel = try LockFreeSpsc(i32).init(test_alloc, 2);
+    const channel = try Spsc(i32).init(test_alloc, 2);
     defer channel.deinit();
     const rx = channel.rx;
 
     try std.testing.expectError(error.Timeout, rx.recvWithTimeout(io, 1));
 }
 
-test "lock free spsc reports full" {
+test "spsc reports full" {
     const io = std.Options.debug_io;
     const test_alloc = std.testing.allocator;
 
-    const channel = try LockFreeSpsc(i32).init(test_alloc, 2);
+    const channel = try Spsc(i32).init(test_alloc, 2);
     defer channel.deinit();
     const tx = channel.tx;
 
@@ -168,11 +177,11 @@ test "lock free spsc reports full" {
     try std.testing.expectError(error.ChannelFull, tx.trySend(io, 30));
 }
 
-test "lock free spsc sends and receives one item" {
+test "spsc sends and receives one item" {
     const io = std.Options.debug_io;
     const test_alloc = std.testing.allocator;
 
-    const channel = try LockFreeSpsc(i32).init(test_alloc, 2);
+    const channel = try Spsc(i32).init(test_alloc, 2);
     defer channel.deinit();
     const tx = channel.tx;
     const rx = channel.rx;
@@ -181,8 +190,8 @@ test "lock free spsc sends and receives one item" {
     try std.testing.expectEqual(@as(i32, 123), try rx.recv(io));
 }
 
-test "lock free spsc sends and receives across threads" {
-    const Chan = LockFreeSpsc(i32);
+test "spsc sends and receives across threads" {
+    const Chan = Spsc(i32);
     const test_alloc = std.testing.allocator;
 
     const Result = struct {
