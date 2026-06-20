@@ -144,4 +144,9 @@ test "core loop" {
     defer parser.deinit(io);
 
     try parser.listen(io);
+
+    var rx = channel.rx;
+    const res = try rx.recv(io);
+
+    std.debug.assert(res.key == 'o');
 }
