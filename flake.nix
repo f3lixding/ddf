@@ -31,6 +31,7 @@
           else
             pkgs.stdenv.hostPlatform.system;
 
+        # This is so that notcurses doesn't crash when launched from tmux
         notcursesPatched = pkgs.notcurses.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ [
             (pkgs.fetchpatch {

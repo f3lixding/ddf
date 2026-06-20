@@ -2,9 +2,20 @@ const std = @import("std");
 
 const util = @import("util.zig");
 const c = util.c;
-// TODO: replace this stub with a real type
-const Msg = enum {};
-const Sender = util.Spsc(Msg).Sender;
+
+pub const InputEvent = struct {
+    key: u32,
+    ncinput: c.ncinput,
+};
+
+/// This is mainly for testability
+/// We don't want to actually init notcurses in tests as it would take over
+/// stdout and stdin for zig's test environment
+pub const InputSource = struct {
+    get_input_nblock: *const fn (*c.notcurses, *c.ncinput) u32,
+};
+
+const Sender = util.Spsc(InputEvent).Sender;
 
 const Self = @This();
 
@@ -13,20 +24,22 @@ sender: Sender,
 nc_ctx: *c.notcurses,
 sampling_interval: std.Io.Duration,
 future: ?std.Io.Future(anyerror!void) = null,
+input_source: InputSource,
 
 pub const Options = struct {
     /// Hz
     sampling_rate: i64 = 60,
     /// abstraction over input
-    input_source: InputSource = .{},
+    input_source: InputSource = .{
+        .get_input_nblock = struct {
+            fn getInputNblock(nc_ctx: *c.notcurses, input: *c.ncinput) u32 {
+                _ = nc_ctx;
+                _ = input;
+                return 0;
+            }
+        }.getInputNblock,
+    },
 };
-
-/// This is mainly for testability
-/// We don't want to actually init notcurses in tests as it would take over
-/// stdout and stdin for zig's test environment
-pub const InputSource = struct {};
-
-pub const NcInputSource = struct {};
 
 pub fn init(
     alloc: std.mem.Allocator,
@@ -46,14 +59,21 @@ pub fn init(
         .sender = sender,
         .nc_ctx = nc_ctx,
         .sampling_interval = sampling_interval,
+        .input_source = opts.input_source,
     };
 }
 
-pub fn listenAndParse(self: *Self, io: std.Io) !void {
+/// Caller must guarantee that:
+/// - channel used must not be deinit before input listener deinit is completed
+/// - notcurses must not be stopped before input listener deinitis completed
+pub fn listen(self: *Self, io: std.Io) !void {
     self.future = try io.concurrent(coreLoop, .{ self, io });
 }
 
 pub fn deinit(self: *Self, io: std.Io) void {
+    const log = std.log.scoped(.input_parser);
+    _ = log;
+
     if (self.future) |*fut| {
         fut.cancel(io) catch {
             // TODO: log it here
@@ -67,15 +87,23 @@ pub fn deinit(self: *Self, io: std.Io) void {
 /// This is because we need to accommodate for a cancellation point
 pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
     const log = std.log.scoped(.input_parser);
-    _ = log;
 
     var input = std.mem.zeroes(c.ncinput);
 
     while (true) {
         try io.checkCancel();
 
-        const key = c.notcurses_get_nblock(self.nc_ctx, &input);
-        _ = key;
+        const key = self.input_source.get_input_nblock(self.nc_ctx, &input);
+        if (key != 0) {
+            const input_event: InputEvent = .{
+                .key = key,
+                .ncinput = input,
+            };
+
+            self.sender.trySend(io, input_event) catch |err| {
+                log.err("Error encountering while sending: {any}", .{err});
+            };
+        }
 
         try io.sleep(self.sampling_interval, .awake);
     }
@@ -83,7 +111,7 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
 
 test "init" {
     const alloc = std.testing.allocator;
-    const channel = try util.Spsc(Msg).init(alloc, 2);
+    const channel = try util.Spsc(InputEvent).init(alloc, 2);
     defer channel.deinit();
 
     // Do not initialize real notcurses in the Zig test runner: the runner uses
@@ -92,4 +120,28 @@ test "init" {
 
     const parser = try init(alloc, fake_nc_ctx, channel.tx, .{});
     try std.testing.expectEqual(std.Io.Duration.fromMilliseconds(16), parser.sampling_interval);
+}
+
+test "core loop" {
+    const alloc = std.testing.allocator;
+    const channel = try util.Spsc(InputEvent).init(alloc, 2);
+    defer channel.deinit();
+
+    const fake_nc_ctx: *c.notcurses = @ptrFromInt(1);
+
+    const input_source = struct {
+        fn getInputNblockFake(nc_ctx: *c.notcurses, input: *c.ncinput) u32 {
+            _ = nc_ctx;
+            _ = input;
+            return 'o';
+        }
+    }.getInputNblockFake;
+
+    const io = std.testing.io;
+    var parser = try init(alloc, fake_nc_ctx, channel.tx, .{
+        .input_source = .{ .get_input_nblock = &input_source },
+    });
+    defer parser.deinit(io);
+
+    try parser.listen(io);
 }
