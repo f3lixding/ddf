@@ -9,6 +9,14 @@ pub const InputEvent = struct {
     ncinput: c.ncinput,
 };
 
+pub const FrameTime = struct {
+    /// Current app-loop time in milliseconds from the selected monotonic-ish Io
+    /// clock. This is not wall-clock Unix time.
+    now_ms: i64,
+    /// Milliseconds elapsed since the previous app-loop iteration.
+    elapsed_ms: i64,
+};
+
 pub const Conclusion = union(enum) {
     /// This would mean the component is already created
     /// This is so that the orchestrator can properly manage it

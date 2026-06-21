@@ -6,6 +6,7 @@ const DiffWindow = @import("components/DiffWindow.zig");
 
 const protocol = @import("protocol.zig");
 const InputEvent = protocol.InputEvent;
+const FrameTime = protocol.FrameTime;
 const Receiver = util.Spsc(InputEvent).Receiver;
 const Conclusion = protocol.Conclusion;
 const Component = @import("components/Component.zig");
@@ -45,17 +46,33 @@ pub fn deinit(self: *Self, io: std.Io) void {
 
 fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
     _ = nc_ctx;
+    var last_tick = std.Io.Timestamp.now(io, .awake);
 
     while (true) {
         try io.checkCancel();
 
         const interval = self.loopTime();
+        const recv_res = self.rx.recvWithTimeout(io, interval);
+
+        const now = std.Io.Timestamp.now(io, .awake);
+        const elapsed = last_tick.durationTo(now);
+        last_tick = now;
+        const frame_time: FrameTime = .{
+            .now_ms = now.toMilliseconds(),
+            .elapsed_ms = elapsed.toMilliseconds(),
+        };
 
         // Notes to self. To be deleted later:
         // Here we should go through the stack and pick out the first with a conclusion
         // This means we should probably need to come up with a protocol agreed upon by all components
-        const evt = try self.rx.recvWithTimeout(io, interval);
-        try self.handleInputEvent(evt);
+        if (recv_res) |evt| {
+            try self.handleInputEvent(evt);
+        } else |err| switch (err) {
+            error.Timeout => {
+                try self.tick(frame_time);
+            },
+            else => return err,
+        }
 
         // try self.render();
     }
@@ -83,12 +100,12 @@ fn handleInputEvent(self: *Self, evt: InputEvent) !void {
     }
 }
 
-fn tick(self: *Self, time_elapsed_ms: i64) !void {
+fn tick(self: *Self, frame_time: FrameTime) !void {
     var i = self.components.items.len;
 
     while (i > 0) {
         i -= 1;
-        const tick_res = try self.components.items[i].update(time_elapsed_ms);
+        const tick_res = try self.components.items[i].update(frame_time);
 
         switch (tick_res) {
             .Dismount => {
@@ -132,9 +149,10 @@ test "handleInputEvent mounts and dismounts components" {
             return null;
         }
 
-        fn update(ptr: *anyopaque, elapsed_ms: i64) anyerror!void {
+        fn update(ptr: *anyopaque, frame_time: FrameTime) anyerror!Conclusion {
             _ = ptr;
-            _ = elapsed_ms;
+            _ = frame_time;
+            return .Noop;
         }
 
         fn renderFn(ptr: *anyopaque, nc_ctx: *c.notcurses) anyerror!void {
@@ -149,9 +167,8 @@ test "handleInputEvent mounts and dismounts components" {
             return self.result;
         }
 
-        fn shouldUpdate(ptr: *anyopaque, cur_time_ms: i64) bool {
+        fn isDirty(ptr: *anyopaque) bool {
             _ = ptr;
-            _ = cur_time_ms;
             return false;
         }
 
@@ -165,8 +182,8 @@ test "handleInputEvent mounts and dismounts components" {
             .update = update,
             .render = renderFn,
             .key_handler = keyHandler,
-            .should_update = shouldUpdate,
             .clean_up = cleanUp,
+            .is_dirty = isDirty,
         };
 
         fn component(self: *@This()) Component {
