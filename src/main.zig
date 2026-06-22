@@ -6,6 +6,7 @@ const c = util.c;
 const logging = @import("logging.zig");
 const InputParser = @import("InputParser.zig");
 const protocol = @import("protocol.zig");
+const App = @import("App.zig");
 
 pub const std_options: std.Options = .{
     .log_level = .debug,
@@ -68,6 +69,11 @@ const Opts = struct {
         defer input_parser.deinit(io);
 
         try input_parser.listen(io);
+
+        var app = App.init(alloc, channel.rx);
+        defer app.deinit(io);
+
+        try app.startAndAwait(io, nc_ctx);
     }
 };
 

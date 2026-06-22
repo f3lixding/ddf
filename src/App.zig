@@ -27,7 +27,14 @@ pub fn init(alloc: std.mem.Allocator, rx: Receiver) Self {
 }
 
 pub fn start(self: *Self, io: std.Io, nc_ctx: *c.notcurses) !void {
+    // TODO: add a base component into components
     self.future = try std.Io.concurrent(io, coreLoop, .{ self, io, nc_ctx });
+}
+
+/// This is like start but it blocks until the App is concluded
+pub fn startAndAwait(self: *Self, io: std.Io, nc_ctx: *c.notcurses) !void {
+    try self.start(io, nc_ctx);
+    try self.future.?.await(io);
 }
 
 pub fn deinit(self: *Self, io: std.Io) void {
