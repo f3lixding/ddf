@@ -100,6 +100,8 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
                 .ncinput = input,
             };
 
+            log.info("received event: {any}", .{input_event});
+
             self.sender.trySend(io, input_event) catch |err| {
                 log.err("Error encountering while sending: {any}", .{err});
             };

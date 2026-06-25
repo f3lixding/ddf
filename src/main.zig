@@ -65,7 +65,13 @@ const Opts = struct {
         const channel = try Spsc(InputEvent).init(alloc, 25);
         defer channel.deinit();
 
-        var input_parser = try InputParser.init(alloc, nc_ctx, channel.tx, .{});
+        var input_parser = try InputParser.init(alloc, nc_ctx, channel.tx, .{
+            .input_source = .{ .get_input_nblock = struct {
+                fn getInput(_nc_ctx: *c.notcurses, input: *c.ncinput) u32 {
+                    return c.notcurses_get_nblock(_nc_ctx, input);
+                }
+            }.getInput },
+        });
         defer input_parser.deinit(io);
 
         try input_parser.listen(io);
