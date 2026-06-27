@@ -57,7 +57,7 @@ const Opts = struct {
         }
 
         var opts = std.mem.zeroes(c.notcurses_options);
-        const nc_ctx = c.notcurses_core_init(&opts, null) orelse {
+        const nc_ctx = c.notcurses_init(&opts, null) orelse {
             return error.NotcursesInitFailed;
         };
         defer _ = c.notcurses_stop(nc_ctx);
@@ -79,7 +79,7 @@ const Opts = struct {
         var app = App.init(alloc, channel.rx);
         const Splash = @import("components/Splash.zig");
         const splash = try alloc.create(Splash);
-        splash.* = .init();
+        splash.* = try .init(nc_ctx);
         try app.components.append(alloc, splash.initInterface());
 
         defer app.deinit(io);

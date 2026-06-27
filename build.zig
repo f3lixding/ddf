@@ -73,6 +73,8 @@ fn linkNc(bin: *std.Build.Step.Compile) void {
 
     bin.root_module.linkSystemLibrary("notcurses", .{
         .use_pkg_config = .yes,
+        // We need this for all the extra functionalities we are using
+        .needed = true,
     });
 }
 
