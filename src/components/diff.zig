@@ -6,17 +6,12 @@ const startsWith = std.mem.startsWith;
 pub const Diff = struct {
     files: []FileDiff,
 
-    pub const ParseState = union(enum) {
-        FileDiff: FileDiff,
-        Hunk: Hunk,
-        DiffLine: DiffLine,
-    };
-
     pub fn init(alloc: std.mem.Allocator, input: []const u8) !Diff {
         var lines = std.mem.splitScalar(u8, input, '\n');
         var files: std.ArrayList(FileDiff) = .empty;
 
-        outer: while (lines.next()) |line| {
+        while (lines.next()) |line| {
+            std.debug.print("line: {s}\n", .{line});
             if (!startsWith(u8, line, "diff")) {
                 return error.MalformedDiff;
             }
@@ -28,21 +23,21 @@ pub const Diff = struct {
 
             // Parsing meta
             while (true) {
-                const peek = lines.peek() orelse break :outer;
+                const peek = lines.peek() orelse break;
 
                 if (startsWith(u8, peek, "@@")) {
                     const slice = try buf.toOwnedSlice(alloc);
                     defer alloc.free(slice);
-                    const meta = try parseMeta(try buf.toOwnedSlice(alloc));
+                    const meta = try parseMeta(slice);
 
-                    file_diff.old_path = try alloc.dupe(u8, meta.old_path);
-                    file_diff.new_path = try alloc.dupe(u8, meta.new_path);
+                    file_diff.old_path = meta.old_path;
+                    file_diff.new_path = meta.new_path;
 
                     _ = lines.next();
 
                     break;
                 } else if (startsWith(u8, peek, "diff")) {
-                    continue :outer;
+                    break;
                 }
 
                 const next_line = lines.next().?;
@@ -53,21 +48,26 @@ pub const Diff = struct {
             var hunks: std.ArrayList(Hunk) = .empty;
 
             while (true) {
-                const peek = lines.peek() orelse break :outer;
+                const peek = lines.peek();
 
-                if (startsWith(u8, peek, "@@")) {
+                if (peek == null or startsWith(u8, peek.?, "@@")) {
                     _ = lines.next();
                     if (buf.items.len > 0) {
-                        const hunk = try parseHunk(try buf.toOwnedSlice(alloc));
+                        const slice = try buf.toOwnedSlice(alloc);
+                        defer alloc.free(slice);
+
+                        const hunk = try parseHunk(alloc, slice);
                         try hunks.append(alloc, hunk);
                     }
-                } else if (startsWith(u8, peek, "diff")) {
-                    continue :outer;
+                } else if (startsWith(u8, peek.?, "diff")) {
+                    break;
                 }
 
-                const next_line = lines.next() orelse break :outer;
+                const next_line = lines.next() orelse break;
                 try buf.append(alloc, next_line);
             }
+
+            file_diff.hunks = try hunks.toOwnedSlice(alloc);
 
             try files.append(alloc, file_diff);
         }
@@ -122,9 +122,6 @@ pub const Hunk = struct {
     }
 
     pub fn deinit(self: Hunk, alloc: std.mem.Allocator) void {
-        for (self.lines) |line| {
-            line.deinit(alloc);
-        }
         alloc.free(self.lines);
     }
 };
@@ -138,14 +135,6 @@ pub const DiffLine = union(enum) {
     pub fn render(self: DiffLine) void {
         _ = self;
     }
-
-    pub fn deinit(self: DiffLine, alloc: std.mem.Allocator) void {
-        switch (self) {
-            .context => |ctx| alloc.free(ctx),
-            .add => |a| alloc.free(a),
-            .remove => |r| alloc.free(r),
-        }
-    }
 };
 
 /// Does NOT copy
@@ -153,7 +142,7 @@ fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []c
     std.debug.assert(inputs.len > 0);
 
     const first_line = inputs[0];
-    var iter = std.mem.splitBackwardsAny(u8, first_line, ' ');
+    var iter = std.mem.splitBackwardsAny(u8, first_line, " ");
 
     const new_path = iter.next() orelse return error.MalformedMetaInput;
     const old_path = iter.next() orelse return error.MalformedMetaInput;
@@ -164,7 +153,7 @@ fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []c
     };
 }
 
-/// Does NOT copy
+/// DOES copy
 fn parseHunk(alloc: std.mem.Allocator, inputs: [][]const u8) !Hunk {
     std.debug.assert(inputs.len > 0);
 
@@ -184,10 +173,69 @@ fn parseHunk(alloc: std.mem.Allocator, inputs: [][]const u8) !Hunk {
             continue;
         }
 
-        lines.append(alloc, line);
+        try lines.append(alloc, line);
     }
 
     return .{
         .lines = try lines.toOwnedSlice(alloc),
     };
+}
+
+test "parseMeta extracts old and new paths from diff header" {
+    var inputs = [_][]const u8{
+        "diff --git a/src/components/DiffWindow.zig b/src/components/DiffWindow.zig",
+        "index 95a0b682a7..dc2be24e5f 100644",
+        "--- a/src/components/DiffWindow.zig",
+        "+++ b/src/components/DiffWindow.zig",
+    };
+
+    const meta = try parseMeta(&inputs);
+
+    try std.testing.expectEqualStrings("a/src/components/DiffWindow.zig", meta.old_path);
+    try std.testing.expectEqualStrings("b/src/components/DiffWindow.zig", meta.new_path);
+}
+
+test "parseHunk classifies context add and remove lines" {
+    const alloc = std.testing.allocator;
+
+    const context = " const std = @import(\"std\");";
+    const add = "+const util = @import(\"../util.zig\");";
+    const remove = "-const old = @import(\"old.zig\");";
+    var inputs = [_][]const u8{ context, add, remove };
+
+    const hunk = try parseHunk(alloc, &inputs);
+    defer hunk.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 3), hunk.lines.len);
+    try std.testing.expectEqualStrings(" const std = @import(\"std\");", hunk.lines[0].context);
+    try std.testing.expectEqualStrings("+const util = @import(\"../util.zig\");", hunk.lines[1].add);
+    try std.testing.expectEqualStrings("-const old = @import(\"old.zig\");", hunk.lines[2].remove);
+}
+
+test "Diff.init parses a single file diff" {
+    const input =
+        \\diff --git a/src/components/DiffWindow.zig b/src/components/DiffWindow.zig
+        \\index 95a0b682a7..dc2be24e5f 100644
+        \\--- a/src/components/DiffWindow.zig
+        \\+++ b/src/components/DiffWindow.zig
+        \\@@ -1,1 +1,3 @@
+        \\ const std = @import("std");
+        \\+const util = @import("../util.zig");
+        \\-const old = @import("old.zig");
+        \\
+    ;
+
+    const alloc = std.testing.allocator;
+    const diff = try Diff.init(alloc, input);
+    defer diff.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 1), diff.files.len);
+    try std.testing.expectEqualStrings("a/src/components/DiffWindow.zig", diff.files[0].old_path);
+    try std.testing.expectEqualStrings("b/src/components/DiffWindow.zig", diff.files[0].new_path);
+
+    try std.testing.expectEqual(@as(usize, 1), diff.files[0].hunks.len);
+    try std.testing.expectEqual(@as(usize, 3), diff.files[0].hunks[0].lines.len);
+    try std.testing.expectEqualStrings(" const std = @import(\"std\");", diff.files[0].hunks[0].lines[0].context);
+    try std.testing.expectEqualStrings("+const util = @import(\"../util.zig\");", diff.files[0].hunks[0].lines[1].add);
+    try std.testing.expectEqualStrings("-const old = @import(\"old.zig\");", diff.files[0].hunks[0].lines[2].remove);
 }

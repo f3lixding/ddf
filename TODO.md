@@ -1,5 +1,6 @@
 # TODO
 - [ ] Diff viewer
+- [ ] Streaming api for diff invocation
 - [ ] Proper starting args
 - [ ] Single component for rendering diff
 - [ ] Refine arg sets 
