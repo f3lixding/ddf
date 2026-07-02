@@ -1,6 +1,9 @@
 const std = @import("std");
 const log = std.log.scoped(.diff);
 
+const util = @import("../util.zig");
+const c = util.c;
+
 const startsWith = std.mem.startsWith;
 
 pub const Diff = struct {
@@ -100,9 +103,10 @@ pub const Diff = struct {
         };
     }
 
-    // TODO: refine param list
-    pub fn render(self: Diff) void {
-        _ = self;
+    pub fn render(self: Diff, nc_ctx: *c.notcurses) !void {
+        for (self.display_lines.items) |line| {
+            try line.render(nc_ctx);
+        }
     }
 
     pub fn update(self: *Diff, width: c_uint) !void {
@@ -158,6 +162,7 @@ pub const FileDiff = struct {
         alloc.free(self.hunks);
     }
 
+    // TODO: we would need to perform syntax highlighting here as well
     pub fn gatherDisplayLines(
         self: FileDiff,
         alloc: std.mem.Allocator,
@@ -264,8 +269,9 @@ const DisplayLine = struct {
     kind: Kind,
     text: []const u8,
 
-    pub fn render(self: DisplayLine) void {
+    pub fn render(self: DisplayLine, nc_ctx: *c.notcurses) !void {
         _ = self;
+        _ = nc_ctx;
     }
 };
 
@@ -394,6 +400,11 @@ fn isCombiningCodepoint(cp: u21) bool {
         => true,
         else => false,
     };
+}
+
+/// Entry point for testing rendering
+pub fn main(init: std.process.Init) !void {
+    _ = init;
 }
 
 test "parseMeta extracts old and new paths from diff header" {
