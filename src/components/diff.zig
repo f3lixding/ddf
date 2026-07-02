@@ -5,8 +5,12 @@ const startsWith = std.mem.startsWith;
 
 pub const Diff = struct {
     files: []FileDiff,
-    display_lines: []DisplayLine,
+    display_lines: std.ArrayList(DisplayLine),
     top_line: usize = 0,
+    width: c_uint,
+    widest: c_uint,
+    did_wrap: bool,
+    alloc: std.mem.Allocator,
 
     /// The caller needs to ensure the input stays intact until deinit is
     /// called. The construction of Diff as well as its children makes no
@@ -81,13 +85,18 @@ pub const Diff = struct {
         }
 
         var display_lines: std.ArrayList(DisplayLine) = .empty;
+        var gather_result: GatherResult = .{};
         for (files.items) |file_diff| {
-            try file_diff.gatherDisplayLines(alloc, &display_lines, width);
+            gather_result.merge(try file_diff.gatherDisplayLines(alloc, &display_lines, width));
         }
 
         return .{
             .files = try files.toOwnedSlice(alloc),
-            .display_lines = try display_lines.toOwnedSlice(alloc),
+            .display_lines = display_lines,
+            .width = width,
+            .widest = gather_result.widest,
+            .did_wrap = gather_result.did_wrap,
+            .alloc = alloc,
         };
     }
 
@@ -96,12 +105,44 @@ pub const Diff = struct {
         _ = self;
     }
 
+    pub fn update(self: *Diff, width: c_uint) !void {
+        if (self.width == width) return;
+        if (self.width < width) {
+            self.width = width;
+            if (!self.did_wrap) return;
+        } else if (!self.did_wrap and self.widest < width) {
+            self.width = width;
+            return;
+        }
+
+        self.display_lines.clearRetainingCapacity();
+
+        var gather_result: GatherResult = .{};
+        for (self.files) |file| {
+            gather_result.merge(try file.gatherDisplayLines(self.alloc, &self.display_lines, width));
+        }
+
+        self.width = width;
+        self.widest = gather_result.widest;
+        self.did_wrap = gather_result.did_wrap;
+    }
+
     pub fn deinit(self: Diff, alloc: std.mem.Allocator) void {
         for (self.files) |file| {
             file.deinit(alloc);
         }
         alloc.free(self.files);
-        alloc.free(self.display_lines);
+        self.display_lines.deinit(alloc);
+    }
+};
+
+const GatherResult = struct {
+    widest: c_uint = 0,
+    did_wrap: bool = false,
+
+    fn merge(self: *GatherResult, other: GatherResult) void {
+        self.widest = @max(self.widest, other.widest);
+        self.did_wrap = self.did_wrap or other.did_wrap;
     }
 };
 
@@ -122,10 +163,14 @@ pub const FileDiff = struct {
         alloc: std.mem.Allocator,
         buf: *std.ArrayList(DisplayLine),
         width: c_uint,
-    ) !void {
+    ) !GatherResult {
+        var result: GatherResult = .{};
+
         for (self.hunks) |hunk| {
-            try hunk.gatherDisplayLines(alloc, buf, width);
+            result.merge(try hunk.gatherDisplayLines(alloc, buf, width));
         }
+
+        return result;
     }
 };
 
@@ -146,10 +191,14 @@ pub const Hunk = struct {
         alloc: std.mem.Allocator,
         buf: *std.ArrayList(DisplayLine),
         width: c_uint,
-    ) !void {
+    ) !GatherResult {
+        var result: GatherResult = .{};
+
         for (self.lines) |line| {
-            try line.gatherDisplayLines(alloc, buf, width);
+            result.merge(try line.gatherDisplayLines(alloc, buf, width));
         }
+
+        return result;
     }
 };
 
@@ -163,11 +212,24 @@ pub const DiffLine = union(enum) {
         alloc: std.mem.Allocator,
         buf: *std.ArrayList(DisplayLine),
         width: c_uint,
-    ) !void {
+    ) !GatherResult {
         const line = self.intoDisplayLine();
         var remaining = line.text;
+        var result: GatherResult = .{};
 
-        while (wrapLine(remaining, width)) |end| {
+        while (remaining.len > 0) {
+            const wrapped = wrapLine(remaining, width);
+            result.widest = @max(result.widest, wrapped.display_width);
+
+            const end = wrapped.end orelse {
+                try buf.append(alloc, .{
+                    .kind = line.kind,
+                    .text = remaining,
+                });
+                break;
+            };
+
+            result.did_wrap = true;
             if (end == 0) break;
 
             try buf.append(alloc, .{
@@ -177,12 +239,7 @@ pub const DiffLine = union(enum) {
             remaining = remaining[end..];
         }
 
-        if (remaining.len > 0) {
-            try buf.append(alloc, .{
-                .kind = line.kind,
-                .text = remaining,
-            });
-        }
+        return result;
     }
 
     fn intoDisplayLine(self: DiffLine) DisplayLine {
@@ -256,15 +313,25 @@ fn parseHunk(alloc: std.mem.Allocator, inputs: [][]const u8) !Hunk {
     };
 }
 
+const WrapLineResult = struct {
+    /// Byte index where the current rendered segment should end. `null` means
+    /// the whole input fits without wrapping.
+    end: ?usize,
+    /// Display width of the segment described by `end`, or of the whole input
+    /// when `end` is null.
+    display_width: c_uint,
+};
+
 // TODO: util candidate
-/// Given a slice and a width for display area, produce an optional index of
-/// the new end for the current line. If null is returned, the current line is
-/// not long enough to create a wrap.
-fn wrapLine(input: []const u8, width: c_uint) ?usize {
-    if (input.len == 0) return null;
+/// Given a slice and a width for display area, return where the current line
+/// should wrap plus the display width of the segment. If `end` is null, the
+/// current line is not long enough to create a wrap and `display_width` is the
+/// width of the entire input.
+fn wrapLine(input: []const u8, width: c_uint) WrapLineResult {
+    if (input.len == 0) return .{ .end = null, .display_width = 0 };
 
     const max_width: usize = width;
-    if (max_width == 0) return 0;
+    if (max_width == 0) return .{ .end = 0, .display_width = 0 };
 
     var cols: usize = 0;
     var i: usize = 0;
@@ -277,15 +344,19 @@ fn wrapLine(input: []const u8, width: c_uint) ?usize {
         if (cols + cp_width > max_width) {
             // If the first codepoint itself is wider than the viewport, return
             // its end so callers can still make progress rather than looping
-            // forever on the same input.
-            return if (start == 0) cp_len else start;
+            // forever on the same input. In that case the segment's display
+            // width can be wider than the viewport.
+            return if (start == 0)
+                .{ .end = cp_len, .display_width = @intCast(cp_width) }
+            else
+                .{ .end = start, .display_width = @intCast(cols) };
         }
 
         cols += cp_width;
         i += cp_len;
     }
 
-    return null;
+    return .{ .end = null, .display_width = @intCast(cols) };
 }
 
 fn utf8CodepointLen(input: []const u8) usize {
@@ -310,10 +381,6 @@ fn codepointDisplayWidth(input: []const u8) usize {
     const cp = std.unicode.utf8Decode(input) catch return 1;
     if (isCombiningCodepoint(cp)) return 0;
 
-    // This intentionally avoids depending on notcurses/libc. It is UTF-8 safe,
-    // but not a complete wcwidth implementation; CJK/fullwidth characters are
-    // currently treated as width 1. If that matters, replace this helper with a
-    // real wcwidth/ncstrwidth-backed implementation.
     return 1;
 }
 
@@ -360,19 +427,51 @@ test "parseHunk classifies context add and remove lines" {
     try std.testing.expectEqualStrings("-const old = @import(\"old.zig\");", hunk.lines[2].remove);
 }
 
-test "wrapLine returns null when line fits" {
-    try std.testing.expectEqual(null, wrapLine("abc", 3));
-    try std.testing.expectEqual(null, wrapLine("abc", 4));
+test "wrapLine returns null end and width when line fits" {
+    const exact = wrapLine("abc", 3);
+    try std.testing.expectEqual(null, exact.end);
+    try std.testing.expectEqual(@as(c_uint, 3), exact.display_width);
+
+    const shorter = wrapLine("abc", 4);
+    try std.testing.expectEqual(null, shorter.end);
+    try std.testing.expectEqual(@as(c_uint, 3), shorter.display_width);
 }
 
-test "wrapLine returns byte index where wrapping should occur" {
-    try std.testing.expectEqual(@as(?usize, 3), wrapLine("abcd", 3));
-    try std.testing.expectEqual(@as(?usize, 1), wrapLine("abcd", 1));
+test "wrapLine returns byte index and segment width where wrapping should occur" {
+    const width_three = wrapLine("abcd", 3);
+    try std.testing.expectEqual(@as(?usize, 3), width_three.end);
+    try std.testing.expectEqual(@as(c_uint, 3), width_three.display_width);
+
+    const width_one = wrapLine("abcd", 1);
+    try std.testing.expectEqual(@as(?usize, 1), width_one.end);
+    try std.testing.expectEqual(@as(c_uint, 1), width_one.display_width);
 }
 
 test "wrapLine does not split utf8 codepoints" {
     // é is two bytes, but this implementation treats it as one display column.
-    try std.testing.expectEqual(@as(?usize, 3), wrapLine("éab", 2));
+    const wrapped = wrapLine("éab", 2);
+    try std.testing.expectEqual(@as(?usize, 3), wrapped.end);
+    try std.testing.expectEqual(@as(c_uint, 2), wrapped.display_width);
+}
+
+test "Diff.init tracks widest display line after wrapping" {
+    const input =
+        \\diff --git a/a b/a
+        \\--- a/a
+        \\+++ b/a
+        \\@@ -1,1 +1,3 @@
+        \\ short
+        \\+123456789
+        \\-123456789012
+        \\
+    ;
+
+    const alloc = std.testing.allocator;
+    const diff = try Diff.init(alloc, input, 10);
+    defer diff.deinit(alloc);
+
+    try std.testing.expectEqual(@as(c_uint, 10), diff.widest);
+    try std.testing.expect(diff.did_wrap);
 }
 
 test "Diff.init parses a single file diff" {
@@ -391,6 +490,8 @@ test "Diff.init parses a single file diff" {
     const alloc = std.testing.allocator;
     const diff = try Diff.init(alloc, input, 80);
     defer diff.deinit(alloc);
+
+    try std.testing.expect(!diff.did_wrap);
 
     try std.testing.expectEqual(@as(usize, 1), diff.files.len);
     try std.testing.expectEqualStrings("a/src/components/DiffWindow.zig", diff.files[0].old_path);
