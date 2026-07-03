@@ -103,9 +103,26 @@ pub const Diff = struct {
         };
     }
 
-    pub fn render(self: Diff, nc_ctx: *c.notcurses) !void {
-        for (self.display_lines.items) |line| {
-            try line.render(nc_ctx);
+    pub fn render(
+        self: Diff,
+        nc_ctx: *c.notcurses,
+        plane: *c.ncplane,
+    ) !void {
+        var rows: c_uint = 0;
+        var cols: c_uint = 0;
+        c.ncplane_dim_yx(plane, &rows, &cols);
+
+        c.ncplane_erase(plane);
+
+        const start = @min(self.top_line, self.display_lines.items.len);
+        const visible_count = @min(@as(usize, rows), self.display_lines.items.len - start);
+
+        for (self.display_lines.items[start .. start + visible_count], 0..) |line, row| {
+            try line.render(nc_ctx, plane, @intCast(row));
+        }
+
+        if (c.notcurses_render(nc_ctx) < 0) {
+            return error.RenderFailed;
         }
     }
 
@@ -131,7 +148,7 @@ pub const Diff = struct {
         self.did_wrap = gather_result.did_wrap;
     }
 
-    pub fn deinit(self: Diff, alloc: std.mem.Allocator) void {
+    pub fn deinit(self: *Diff, alloc: std.mem.Allocator) void {
         for (self.files) |file| {
             file.deinit(alloc);
         }
@@ -269,9 +286,43 @@ const DisplayLine = struct {
     kind: Kind,
     text: []const u8,
 
-    pub fn render(self: DisplayLine, nc_ctx: *c.notcurses) !void {
-        _ = self;
+    pub fn render(
+        self: DisplayLine,
+        nc_ctx: *c.notcurses,
+        plane: *c.ncplane,
+        offset: c_int,
+    ) !void {
         _ = nc_ctx;
+
+        c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
+        c.ncplane_set_bg_default(plane);
+
+        switch (self.kind) {
+            .file_header => {
+                c.ncplane_set_styles(plane, c.NCSTYLE_BOLD);
+                if (c.ncplane_set_fg_rgb8(plane, 0x85, 0xd7, 0xff) < 0) return error.SetColorFailed;
+            },
+            .hunk_header => {
+                if (c.ncplane_set_fg_rgb8(plane, 0xd7, 0xaf, 0xff) < 0) return error.SetColorFailed;
+            },
+            .context => {
+                c.ncplane_set_fg_default(plane);
+            },
+            .add => {
+                if (c.ncplane_set_fg_rgb8(plane, 0x87, 0xd7, 0x87) < 0) return error.SetColorFailed;
+            },
+            .remove => {
+                if (c.ncplane_set_fg_rgb8(plane, 0xff, 0x87, 0x87) < 0) return error.SetColorFailed;
+            },
+        }
+
+        if (c.ncplane_putnstr_yx(plane, offset, 0, self.text.len, self.text.ptr) < 0) {
+            return error.PutStrFailed;
+        }
+
+        c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
+        c.ncplane_set_fg_default(plane);
+        c.ncplane_set_bg_default(plane);
     }
 };
 
@@ -377,8 +428,8 @@ fn codepointDisplayWidth(input: []const u8) usize {
     std.debug.assert(input.len > 0);
 
     if (input.len == 1) {
+        if (input[0] == '\t') return 4;
         return switch (input[0]) {
-            '\t' => 4,
             0x00...0x1f, 0x7f => 0,
             else => 1,
         };
@@ -404,7 +455,48 @@ fn isCombiningCodepoint(cp: u21) bool {
 
 /// Entry point for testing rendering
 pub fn main(init: std.process.Init) !void {
-    _ = init;
+    const input: [:0]const u8 =
+        \\diff --git a/src/components/DiffWindow.zig b/src/components/DiffWindow.zig
+        \\index 95a0b682a7..dc2be24e5f 100644
+        \\--- a/src/components/DiffWindow.zig
+        \\+++ b/src/components/DiffWindow.zig
+        \\@@ -1,1 +1,3 @@
+        \\ const std = @import("std");
+        \\+const util = @import("../util.zig");
+        \\-const old = @import("old.zig");
+        \\
+    ;
+
+    const alloc = init.gpa;
+
+    if (c.setlocale(c.LC_ALL, "") == null) {
+        return error.SetLocaleFailed;
+    }
+
+    var opts = std.mem.zeroes(c.notcurses_options);
+    const nc_ctx = c.notcurses_init(&opts, null) orelse {
+        return error.NotcursesInitFailed;
+    };
+    defer _ = c.notcurses_stop(nc_ctx);
+
+    var rows: c_uint = 0;
+    var cols: c_uint = 0;
+
+    if (c.notcurses_refresh(nc_ctx, &rows, &cols) < 0) {
+        return error.RefreshFailed;
+    }
+
+    var diff = try Diff.init(alloc, input, cols);
+    defer diff.deinit(alloc);
+
+    const plane = c.notcurses_stdplane(nc_ctx) orelse return error.CreatePlaneFailed;
+
+    try diff.render(nc_ctx, plane);
+
+    var key_input = std.mem.zeroes(c.ncinput);
+    if (c.notcurses_get_blocking(nc_ctx, &key_input) < 0) {
+        return error.FailedToGetInput;
+    }
 }
 
 test "parseMeta extracts old and new paths from diff header" {
@@ -478,7 +570,7 @@ test "Diff.init tracks widest display line after wrapping" {
     ;
 
     const alloc = std.testing.allocator;
-    const diff = try Diff.init(alloc, input, 10);
+    var diff = try Diff.init(alloc, input, 10);
     defer diff.deinit(alloc);
 
     try std.testing.expectEqual(@as(c_uint, 10), diff.widest);
@@ -499,7 +591,7 @@ test "Diff.init parses a single file diff" {
     ;
 
     const alloc = std.testing.allocator;
-    const diff = try Diff.init(alloc, input, 80);
+    var diff = try Diff.init(alloc, input, 80);
     defer diff.deinit(alloc);
 
     try std.testing.expect(!diff.did_wrap);

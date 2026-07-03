@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const interpreter = b.option([]const u8, "interpreter", "ELF interpreter to set with patchelf");
     const patchelf = b.option([]const u8, "patchelf", "patchelf executable") orelse "patchelf";
     const test_filter = b.option([]const u8, "filter", "test filter, delimited with |");
+    const test_render_bin = b.option([]const u8, "test-render-bin", "test bin to build. this would build in addition to the main bin");
 
     const exe = b.addExecutable(.{
         .name = bin_name,
@@ -28,6 +29,27 @@ pub fn build(b: *std.Build) void {
     addNixRPath(exe, rpaths);
 
     b.installArtifact(exe);
+
+    if (test_render_bin) |name| {
+        // Right now there is only one test
+        _ = name;
+        const render_bin = b.addExecutable(.{
+            .name = "diff_render",
+            .root_module = b.addModule("diff_render", .{
+                .root_source_file = b.path("src/diff_render.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        render_bin.use_lld = false;
+        render_bin.pie = true;
+
+        linkNc(render_bin);
+        addNixRPath(render_bin, rpaths);
+
+        b.installArtifact(render_bin);
+    }
 
     const unit_tests = b.addTest(.{
         .root_module = b.addModule("test_module", .{
