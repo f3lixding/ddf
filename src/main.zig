@@ -113,4 +113,5 @@ test {
     _ = @import("util.zig");
     _ = @import("InputParser.zig");
     _ = @import("App.zig");
+    _ = @import("components/diff.zig");
 }

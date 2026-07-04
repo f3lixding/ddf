@@ -31,55 +31,49 @@ pub const Diff = struct {
                 return error.MalformedDiff;
             }
 
-            var buf: std.ArrayList([]const u8) = .empty;
-            try buf.append(alloc, line);
+            var meta_buf: std.ArrayList([]const u8) = .empty;
+            try meta_buf.append(alloc, line);
 
             var file_diff: FileDiff = undefined;
 
-            // Parsing meta
+            // Parse file metadata: diff --git, index, ---, +++, etc.
             while (true) {
                 const peek = lines.peek() orelse break;
 
-                if (startsWith(u8, peek, "@@")) {
-                    const slice = try buf.toOwnedSlice(alloc);
-                    defer alloc.free(slice);
-                    const meta = try parseMeta(slice);
-
-                    file_diff.old_path = meta.old_path;
-                    file_diff.new_path = meta.new_path;
-
-                    _ = lines.next();
-
-                    break;
-                } else if (startsWith(u8, peek, "diff")) {
+                if (startsWith(u8, peek, "@@") or startsWith(u8, peek, "diff")) {
                     break;
                 }
 
                 const next_line = lines.next().?;
-                try buf.append(alloc, next_line);
+                try meta_buf.append(alloc, next_line);
             }
 
-            // Parse hunks
+            file_diff.meta_lines = try meta_buf.toOwnedSlice(alloc);
+            const meta = try parseMeta(file_diff.meta_lines);
+            file_diff.old_path = meta.old_path;
+            file_diff.new_path = meta.new_path;
+
+            // Parse hunks. Each hunk owns an allocated slice of parsed line
+            // descriptors, but all text points into the caller-owned input.
             var hunks: std.ArrayList(Hunk) = .empty;
 
-            while (true) {
-                const peek = lines.peek();
+            while (lines.peek()) |peek| {
+                if (startsWith(u8, peek, "diff")) break;
+                if (!startsWith(u8, peek, "@@")) return error.MalformedDiff;
 
-                if (peek == null or startsWith(u8, peek.?, "@@")) {
-                    _ = lines.next();
-                    if (buf.items.len > 0) {
-                        const slice = try buf.toOwnedSlice(alloc);
-                        defer alloc.free(slice);
+                const hunk_header = lines.next().?;
+                var hunk_buf: std.ArrayList([]const u8) = .empty;
 
-                        const hunk = try parseHunk(alloc, slice);
-                        try hunks.append(alloc, hunk);
-                    }
-                } else if (startsWith(u8, peek.?, "diff")) {
-                    break;
+                while (lines.peek()) |hunk_peek| {
+                    if (startsWith(u8, hunk_peek, "@@") or startsWith(u8, hunk_peek, "diff")) break;
+                    try hunk_buf.append(alloc, lines.next().?);
                 }
 
-                const next_line = lines.next() orelse break;
-                try buf.append(alloc, next_line);
+                const hunk_lines = try hunk_buf.toOwnedSlice(alloc);
+                defer alloc.free(hunk_lines);
+
+                const hunk = try parseHunk(alloc, hunk_header, hunk_lines);
+                try hunks.append(alloc, hunk);
             }
 
             file_diff.hunks = try hunks.toOwnedSlice(alloc);
@@ -170,9 +164,11 @@ const GatherResult = struct {
 pub const FileDiff = struct {
     old_path: []const u8,
     new_path: []const u8,
+    meta_lines: [][]const u8,
     hunks: []Hunk,
 
     pub fn deinit(self: FileDiff, alloc: std.mem.Allocator) void {
+        alloc.free(self.meta_lines);
         for (self.hunks) |hunk| {
             hunk.deinit(alloc);
         }
@@ -188,6 +184,16 @@ pub const FileDiff = struct {
     ) !GatherResult {
         var result: GatherResult = .{};
 
+        for (self.meta_lines) |meta_line| {
+            result.merge(try gatherTextDisplayLines(
+                alloc,
+                buf,
+                .file_header,
+                meta_line,
+                width,
+            ));
+        }
+
         for (self.hunks) |hunk| {
             result.merge(try hunk.gatherDisplayLines(alloc, buf, width));
         }
@@ -197,6 +203,7 @@ pub const FileDiff = struct {
 };
 
 pub const Hunk = struct {
+    header: []const u8,
     // TODO: actually parse these info
     old_start: usize = 0,
     old_len: usize = 0,
@@ -215,6 +222,14 @@ pub const Hunk = struct {
         width: c_uint,
     ) !GatherResult {
         var result: GatherResult = .{};
+
+        result.merge(try gatherTextDisplayLines(
+            alloc,
+            buf,
+            .hunk_header,
+            self.header,
+            width,
+        ));
 
         for (self.lines) |line| {
             result.merge(try line.gatherDisplayLines(alloc, buf, width));
@@ -236,32 +251,7 @@ pub const DiffLine = union(enum) {
         width: c_uint,
     ) !GatherResult {
         const line = self.intoDisplayLine();
-        var remaining = line.text;
-        var result: GatherResult = .{};
-
-        while (remaining.len > 0) {
-            const wrapped = wrapLine(remaining, width);
-            result.widest = @max(result.widest, wrapped.display_width);
-
-            const end = wrapped.end orelse {
-                try buf.append(alloc, .{
-                    .kind = line.kind,
-                    .text = remaining,
-                });
-                break;
-            };
-
-            result.did_wrap = true;
-            if (end == 0) break;
-
-            try buf.append(alloc, .{
-                .kind = line.kind,
-                .text = remaining[0..end],
-            });
-            remaining = remaining[end..];
-        }
-
-        return result;
+        return try gatherTextDisplayLines(alloc, buf, line.kind, line.text, width);
     }
 
     fn intoDisplayLine(self: DiffLine) DisplayLine {
@@ -342,13 +332,48 @@ fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []c
     };
 }
 
-/// Does NOT copy
-fn parseHunk(alloc: std.mem.Allocator, inputs: [][]const u8) !Hunk {
-    std.debug.assert(inputs.len > 0);
+fn gatherTextDisplayLines(
+    alloc: std.mem.Allocator,
+    buf: *std.ArrayList(DisplayLine),
+    kind: DisplayLine.Kind,
+    text: []const u8,
+    width: c_uint,
+) !GatherResult {
+    var remaining = text;
+    var result: GatherResult = .{};
 
+    while (remaining.len > 0) {
+        const wrapped = wrapLine(remaining, width);
+        result.widest = @max(result.widest, wrapped.display_width);
+
+        const end = wrapped.end orelse {
+            try buf.append(alloc, .{
+                .kind = kind,
+                .text = remaining,
+            });
+            break;
+        };
+
+        result.did_wrap = true;
+        if (end == 0) break;
+
+        try buf.append(alloc, .{
+            .kind = kind,
+            .text = remaining[0..end],
+        });
+        remaining = remaining[end..];
+    }
+
+    return result;
+}
+
+/// Does NOT copy
+fn parseHunk(alloc: std.mem.Allocator, header: []const u8, inputs: [][]const u8) !Hunk {
     var lines: std.ArrayList(DiffLine) = .empty;
 
     for (inputs) |input| {
+        if (input.len == 0) continue;
+
         var line: DiffLine = undefined;
 
         if (startsWith(u8, input, " ")) {
@@ -366,6 +391,7 @@ fn parseHunk(alloc: std.mem.Allocator, inputs: [][]const u8) !Hunk {
     }
 
     return .{
+        .header = header,
         .lines = try lines.toOwnedSlice(alloc),
     };
 }
@@ -494,8 +520,11 @@ pub fn main(init: std.process.Init) !void {
     try diff.render(nc_ctx, plane);
 
     var key_input = std.mem.zeroes(c.ncinput);
-    if (c.notcurses_get_blocking(nc_ctx, &key_input) < 0) {
-        return error.FailedToGetInput;
+    while (true) {
+        const key = c.notcurses_get_blocking(nc_ctx, &key_input);
+        if (key == 'q') {
+            break;
+        }
     }
 }
 
@@ -521,7 +550,7 @@ test "parseHunk classifies context add and remove lines" {
     const remove = "-const old = @import(\"old.zig\");";
     var inputs = [_][]const u8{ context, add, remove };
 
-    const hunk = try parseHunk(alloc, &inputs);
+    const hunk = try parseHunk(alloc, "@@ -1,1 +1,3 @@", &inputs);
     defer hunk.deinit(alloc);
 
     try std.testing.expectEqual(@as(usize, 3), hunk.lines.len);
