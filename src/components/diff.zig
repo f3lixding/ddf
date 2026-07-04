@@ -3,8 +3,22 @@ const log = std.log.scoped(.diff);
 
 const util = @import("../util.zig");
 const c = util.c;
+const highlight = @import("syntax_highlighter.zig");
+const HighlightSchema = highlight.HighlightSchema;
 
 const startsWith = std.mem.startsWith;
+
+const default_schema: HighlightSchema = .{
+    .keyword = 0x569cd6, // blue
+    .function = 0xdcdcaa, // soft yellow
+    .string = 0xce9178, // salmon/orange
+    .comment = 0x6a9955, // muted green
+    .type = 0x4ec9b0, // teal
+    .variable = 0x9cdcfe, // light blue
+    .number = 0xb5cea8, // pale green
+    .punctuation = 0xd4d4d4, // neutral foreground
+    .unknown = 0xd4d4d4, // neutral foreground
+};
 
 pub const Diff = struct {
     files: []FileDiff,
@@ -14,6 +28,7 @@ pub const Diff = struct {
     widest: c_uint,
     did_wrap: bool,
     alloc: std.mem.Allocator,
+    highlight_schema: HighlightSchema = default_schema,
 
     /// The caller needs to ensure the input stays intact until deinit is
     /// called. The construction of Diff as well as its children makes no

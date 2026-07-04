@@ -7,6 +7,7 @@ pub const c = @cImport({
     @cInclude("wchar.h");
     @cInclude("notcurses/notcurses.h");
     @cInclude("notcurses/direct.h");
+    @cInclude("tree_sitter/api.h");
 });
 
 /// A SPSC (single producer, single consumer)

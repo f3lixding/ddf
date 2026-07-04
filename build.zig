@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
     exe.pie = true;
 
     linkNc(exe);
+    linkTreeSitter(exe, b);
     addNixRPath(exe, rpaths);
 
     b.installArtifact(exe);
@@ -46,6 +47,7 @@ pub fn build(b: *std.Build) void {
         render_bin.pie = true;
 
         linkNc(render_bin);
+        linkTreeSitter(render_bin, b);
         addNixRPath(render_bin, rpaths);
 
         b.installArtifact(render_bin);
@@ -71,6 +73,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.pie = true;
 
     linkNc(unit_tests);
+    linkTreeSitter(unit_tests, b);
     addNixRPath(unit_tests, rpaths);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -98,6 +101,36 @@ fn linkNc(bin: *std.Build.Step.Compile) void {
         // We need this for all the extra functionalities we are using
         .needed = true,
     });
+}
+
+fn linkTreeSitter(bin: *std.Build.Step.Compile, b: *std.Build) void {
+    bin.root_module.linkSystemLibrary("tree-sitter", .{
+        .use_pkg_config = .yes,
+    });
+
+    // Vendored grammars. Each grammar exports one language function:
+    // - tree_sitter_zig()
+    // - tree_sitter_c()
+    // - tree_sitter_rust()
+    addTreeSitterGrammar(bin, b, "vendor/tree-sitter-zig/src", &.{"parser.c"});
+    addTreeSitterGrammar(bin, b, "vendor/tree-sitter-c/src", &.{"parser.c"});
+    addTreeSitterGrammar(bin, b, "vendor/tree-sitter-rust/src", &.{ "parser.c", "scanner.c" });
+}
+
+fn addTreeSitterGrammar(
+    bin: *std.Build.Step.Compile,
+    b: *std.Build,
+    comptime src_dir: []const u8,
+    comptime files: []const []const u8,
+) void {
+    bin.root_module.addIncludePath(b.path(src_dir));
+
+    inline for (files) |file| {
+        bin.root_module.addCSourceFile(.{
+            .file = b.path(src_dir ++ "/" ++ file),
+            .flags = &.{},
+        });
+    }
 }
 
 fn addNixRPath(bin: *std.Build.Step.Compile, maybe_rpaths: ?[]const u8) void {

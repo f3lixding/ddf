@@ -41,6 +41,13 @@
           ];
         });
 
+        treeSitterDeps = with pkgs; [
+          tree-sitter
+          tree-sitter-grammars.tree-sitter-c
+          tree-sitter-grammars.tree-sitter-zig
+          tree-sitter-grammars.tree-sitter-rust
+        ];
+
         librariesToInclude = [
           notcursesPatched
           pkgs.ncurses
@@ -49,7 +56,8 @@
           pkgs.glibc
           pkgs.glibc
           pkgs.stdenv.cc.cc.lib
-        ];
+        ]
+        ++ treeSitterDeps;
 
         binName = "df";
       in
@@ -82,32 +90,35 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            cmake
-            gcc
-            zig
-            zls
-            notcursesPatched
-            pkg-config
-            patchelfUnstable
+          packages =
+            with pkgs;
+            [
+              cmake
+              gcc
+              zig
+              zls
+              notcursesPatched
+              pkg-config
+              patchelfUnstable
 
-            (writeShellScriptBin "zig-build" ''
-              set -euo pipefail
+              (writeShellScriptBin "zig-build" ''
+                set -euo pipefail
 
-              NC_DEV_LOADER=${stdenv.cc.bintools.dynamicLinker}
-              NC_DEV_LIBRARY_PATH=${lib.makeLibraryPath librariesToInclude}
+                NC_DEV_LOADER=${stdenv.cc.bintools.dynamicLinker}
+                NC_DEV_LIBRARY_PATH=${lib.makeLibraryPath librariesToInclude}
 
-              zig build \
-                -Drpath="$NC_DEV_LIBRARY_PATH" \
-                -Dinterpreter="$NC_DEV_LOADER" \
-                -Dpatchelf=${patchelfUnstable}/bin/patchelf \
-                -Dbin-name=${binName} \
-                "$@"
-              ${patchelfUnstable}/bin/patchelf \
-                --set-interpreter "$NC_DEV_LOADER" \
-                zig-out/bin/${binName}
-            '')
-          ];
+                zig build \
+                  -Drpath="$NC_DEV_LIBRARY_PATH" \
+                  -Dinterpreter="$NC_DEV_LOADER" \
+                  -Dpatchelf=${patchelfUnstable}/bin/patchelf \
+                  -Dbin-name=${binName} \
+                  "$@"
+                ${patchelfUnstable}/bin/patchelf \
+                  --set-interpreter "$NC_DEV_LOADER" \
+                  zig-out/bin/${binName}
+              '')
+            ]
+            ++ treeSitterDeps;
 
           shellHook = ''
             export NC_DEV_LOADER=${pkgs.stdenv.cc.bintools.dynamicLinker}
