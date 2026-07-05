@@ -5,6 +5,8 @@ const util = @import("../util.zig");
 const c = util.c;
 const highlight = @import("syntax_highlighter.zig");
 const HighlightSchema = highlight.HighlightSchema;
+const HighlightSpan = highlight.HighlightSpan;
+const Language = highlight.Language;
 
 const startsWith = std.mem.startsWith;
 
@@ -68,6 +70,17 @@ pub const Diff = struct {
             file_diff.old_path = meta.old_path;
             file_diff.new_path = meta.new_path;
 
+            // We're assuming each line in a single file has the same language
+            var language: ?Language = null;
+            const file_ext = std.fs.path.extension(meta.old_path);
+            if (std.mem.eql(u8, file_ext, ".zig")) {
+                language = .zig;
+            } else if (std.mem.eql(u8, file_ext, ".c")) {
+                language = .c;
+            } else if (std.mem.eql(u8, file_ext, ".rs")) {
+                language = .rust;
+            }
+
             // Parse hunks. Each hunk owns an allocated slice of parsed line
             // descriptors, but all text points into the caller-owned input.
             var hunks: std.ArrayList(Hunk) = .empty;
@@ -84,10 +97,54 @@ pub const Diff = struct {
                     try hunk_buf.append(alloc, lines.next().?);
                 }
 
+                var old_buf_hl_spans: ?[]HighlightSpan = null;
+                var new_buf_hl_spans: ?[]HighlightSpan = null;
+
+                if (language) |lang| {
+                    // Obtain syntax highlighting spans
+                    // For this we need to do the following preprocessing:
+                    // - group lines based on their prefix (which can be a choice of space, + or -)
+                    // - remove the prefix for each line (so they can parsed properly)
+                    // Treesitter expects one contiguous buffer. As a result we
+                    // would have to allocate here
+                    //
+                    // TODO: In the future for more accurate / complete syntax
+                    // highlighting, we might need to parse the entire file
+                    // otherwise we risk having incomplete buffers passed to
+                    // the parser and therefore resulting in incorrect parsing
+                    var old_buf: std.ArrayList(u8) = .empty;
+                    defer old_buf.deinit(alloc);
+                    var new_buf: std.ArrayList(u8) = .empty;
+                    defer new_buf.deinit(alloc);
+
+                    for (hunk_buf.items, 0..) |content, idx| {
+                        if (startsWith(u8, content, " ") or startsWith(u8, content, "-")) {
+                            try old_buf.append(alloc, ' ');
+                            try old_buf.appendSlice(alloc, content[1..]);
+                            if (idx < hunk_buf.items.len - 1) {
+                                try old_buf.append(alloc, '\n'); // does this new line matter?
+                            }
+                        } else if (startsWith(u8, content, "+")) {
+                            try new_buf.append(alloc, ' ');
+                            try new_buf.appendSlice(alloc, content[1..]);
+                            if (idx < hunk_buf.items.len - 1) {
+                                try new_buf.append(alloc, '\n');
+                            }
+                        }
+                    }
+
+                    old_buf_hl_spans = try highlight.highlight(alloc, lang, old_buf.items);
+                    new_buf_hl_spans = try highlight.highlight(alloc, lang, new_buf.items);
+                }
+
                 const hunk_lines = try hunk_buf.toOwnedSlice(alloc);
                 defer alloc.free(hunk_lines);
 
-                const hunk = try parseHunk(alloc, hunk_header, hunk_lines);
+                var hunk = try parseHunk(alloc, hunk_header, hunk_lines);
+
+                hunk.new_buf_hl_spans = new_buf_hl_spans;
+                hunk.old_buf_hl_spans = old_buf_hl_spans;
+
                 try hunks.append(alloc, hunk);
             }
 
@@ -206,6 +263,10 @@ pub const FileDiff = struct {
                 .file_header,
                 meta_line,
                 width,
+                null,
+                null,
+                null,
+                null,
             ));
         }
 
@@ -225,9 +286,17 @@ pub const Hunk = struct {
     new_start: usize = 0,
     new_len: usize = 0,
     lines: []DiffLine,
+    old_buf_hl_spans: ?[]HighlightSpan = null,
+    new_buf_hl_spans: ?[]HighlightSpan = null,
 
     pub fn deinit(self: Hunk, alloc: std.mem.Allocator) void {
         alloc.free(self.lines);
+        if (self.old_buf_hl_spans) |spans| {
+            alloc.free(spans);
+        }
+        if (self.new_buf_hl_spans) |spans| {
+            alloc.free(spans);
+        }
     }
 
     pub fn gatherDisplayLines(
@@ -244,10 +313,25 @@ pub const Hunk = struct {
             .hunk_header,
             self.header,
             width,
+            null,
+            null,
+            null,
+            null,
         ));
 
+        var old_buf_offset: usize = 0;
+        var new_buf_offset: usize = 0;
+
         for (self.lines) |line| {
-            result.merge(try line.gatherDisplayLines(alloc, buf, width));
+            result.merge(try line.gatherDisplayLines(
+                alloc,
+                buf,
+                width,
+                &old_buf_offset,
+                &new_buf_offset,
+                self.new_buf_hl_spans,
+                self.old_buf_hl_spans,
+            ));
         }
 
         return result;
@@ -264,9 +348,24 @@ pub const DiffLine = union(enum) {
         alloc: std.mem.Allocator,
         buf: *std.ArrayList(DisplayLine),
         width: c_uint,
+        old_buf_offset: *usize,
+        new_buf_offset: *usize,
+        old_buf_hl_spans: ?[]HighlightSpan,
+        new_buf_hl_spans: ?[]HighlightSpan,
     ) !GatherResult {
         const line = self.intoDisplayLine();
-        return try gatherTextDisplayLines(alloc, buf, line.kind, line.text, width);
+
+        return try gatherTextDisplayLines(
+            alloc,
+            buf,
+            line.kind,
+            line.text,
+            width,
+            old_buf_offset,
+            new_buf_offset,
+            old_buf_hl_spans,
+            new_buf_hl_spans,
+        );
     }
 
     fn intoDisplayLine(self: DiffLine) DisplayLine {
@@ -290,6 +389,25 @@ const DisplayLine = struct {
 
     kind: Kind,
     text: []const u8,
+
+    /// This denotes the offset of beginning of the DisplayLine from the
+    /// beginning of the hunk
+    /// This is significant because syntax highlighting is done per hunk in two
+    /// passes: old buffer and new buffer
+    /// New buffer: context + lines added
+    /// Old buffer: context + lines removed
+    ///
+    /// This also means that there are two offsets, one for old buffer and one
+    /// for new. For new context, even if they are interleaved, we would assign
+    /// the offset from old buffer. This means that for context, we would use
+    /// highlight spans for old buffer.
+    hunk_offset: usize = 0,
+
+    /// this is _not_ owned by display line
+    new_buf_hl_spans: ?[]HighlightSpan = null,
+
+    /// this is _not_ owned by display line
+    old_buf_hl_spans: ?[]HighlightSpan = null,
 
     pub fn render(
         self: DisplayLine,
@@ -347,12 +465,17 @@ fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []c
     };
 }
 
+// TODO: Maybe separate this into different functions...
 fn gatherTextDisplayLines(
     alloc: std.mem.Allocator,
     buf: *std.ArrayList(DisplayLine),
     kind: DisplayLine.Kind,
     text: []const u8,
     width: c_uint,
+    old_buf_offset: ?*usize,
+    new_buf_offset: ?*usize,
+    old_buf_hl_spans: ?[]HighlightSpan,
+    new_buf_hl_spans: ?[]HighlightSpan,
 ) !GatherResult {
     var remaining = text;
     var result: GatherResult = .{};
@@ -365,17 +488,64 @@ fn gatherTextDisplayLines(
             try buf.append(alloc, .{
                 .kind = kind,
                 .text = remaining,
+                .hunk_offset = if (old_buf_offset != null and new_buf_offset != null) blk: {
+                    const old = old_buf_offset.?;
+                    const new = new_buf_offset.?;
+                    break :blk if (kind == .context or kind == .remove) old.* else if (kind == .add) new.* else 0;
+                } else 0,
+                .old_buf_hl_spans = old_buf_hl_spans,
+                .new_buf_hl_spans = new_buf_hl_spans,
             });
+
+            if (old_buf_offset != null and new_buf_offset != null) {
+                const old = old_buf_offset.?;
+                const new = new_buf_offset.?;
+                const source_len = remaining.len - @as(usize, if (remaining.len > 0 and (remaining[0] == ' ' or remaining[0] == '+' or remaining[0] == '-')) 1 else 0) + 1;
+
+                if (kind == .context) {
+                    old.* += source_len;
+                    new.* += source_len;
+                } else if (kind == .remove) {
+                    old.* += source_len;
+                } else if (kind == .add) {
+                    new.* += source_len;
+                }
+            }
+
             break;
         };
 
         result.did_wrap = true;
         if (end == 0) break;
 
+        const consumed = remaining[0..end];
         try buf.append(alloc, .{
             .kind = kind,
-            .text = remaining[0..end],
+            .text = consumed,
+            .hunk_offset = if (old_buf_offset != null and new_buf_offset != null) blk: {
+                const old = old_buf_offset.?;
+                const new = new_buf_offset.?;
+                break :blk if (kind == .context or kind == .remove) old.* else if (kind == .add) new.* else 0;
+            } else 0,
+            .old_buf_hl_spans = old_buf_hl_spans,
+            .new_buf_hl_spans = new_buf_hl_spans,
         });
+
+        if (old_buf_offset != null and new_buf_offset != null) {
+            const old = old_buf_offset.?;
+            const new = new_buf_offset.?;
+            const source_len = consumed.len - @as(usize, if (consumed.len > 0 and (consumed[0] == ' ' or consumed[0] == '+' or consumed[0] == '-')) 1 else 0);
+
+            if (kind == .context) {
+                old.* += source_len;
+                new.* += source_len;
+            } else if (kind == .remove) {
+                old.* += source_len;
+            } else if (kind == .add) {
+                new.* += source_len;
+            }
+        }
+
         remaining = remaining[end..];
     }
 
@@ -649,4 +819,83 @@ test "Diff.init parses a single file diff" {
     try std.testing.expectEqualStrings(" const std = @import(\"std\");", diff.files[0].hunks[0].lines[0].context);
     try std.testing.expectEqualStrings("+const util = @import(\"../util.zig\");", diff.files[0].hunks[0].lines[1].add);
     try std.testing.expectEqualStrings("-const old = @import(\"old.zig\");", diff.files[0].hunks[0].lines[2].remove);
+}
+
+test "hunk display lines track old and new source offsets" {
+    const alloc = std.testing.allocator;
+
+    var inputs = [_][]const u8{
+        " const a",
+        "-const old",
+        "+const new",
+        " const z",
+    };
+
+    const hunk = try parseHunk(alloc, "@@ -1,3 +1,3 @@", &inputs);
+    defer hunk.deinit(alloc);
+
+    var display_lines: std.ArrayList(DisplayLine) = .empty;
+    defer display_lines.deinit(alloc);
+
+    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 80);
+
+    // 0 is the hunk header. The rest are the hunk body lines.
+    try std.testing.expectEqual(@as(usize, 5), display_lines.items.len);
+    try std.testing.expectEqualStrings(" const a", display_lines.items[1].text);
+    try std.testing.expectEqual(@as(usize, 0), display_lines.items[1].hunk_offset);
+
+    // Old side source is: "const a\nconst old\nconst z\n".
+    // The removed line begins after "const a\n".
+    try std.testing.expectEqualStrings("-const old", display_lines.items[2].text);
+    try std.testing.expectEqual(@as(usize, "const a\n".len), display_lines.items[2].hunk_offset);
+
+    // New side source is: "const a\nconst new\nconst z\n".
+    // The added line also begins after "const a\n".
+    try std.testing.expectEqualStrings("+const new", display_lines.items[3].text);
+    try std.testing.expectEqual(@as(usize, "const a\n".len), display_lines.items[3].hunk_offset);
+
+    // Context lines use the old-side offset. This line begins after
+    // "const a\nconst old\n" in the old-side reconstructed hunk source.
+    try std.testing.expectEqualStrings(" const z", display_lines.items[4].text);
+    try std.testing.expectEqual(@as(usize, "const a\nconst old\n".len), display_lines.items[4].hunk_offset);
+}
+
+test "wrapped hunk display lines track offsets within stripped source" {
+    const alloc = std.testing.allocator;
+
+    var inputs = [_][]const u8{
+        " abcdef",
+        "-gone",
+    };
+
+    const hunk = try parseHunk(alloc, "@@ -1,2 +1,1 @@", &inputs);
+    defer hunk.deinit(alloc);
+
+    var display_lines: std.ArrayList(DisplayLine) = .empty;
+    defer display_lines.deinit(alloc);
+
+    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 4);
+
+    const Find = struct {
+        fn line(items: []const DisplayLine, kind: DisplayLine.Kind, text: []const u8) !DisplayLine {
+            for (items) |item| {
+                if (item.kind == kind and std.mem.eql(u8, item.text, text)) return item;
+            }
+            return error.DisplayLineNotFound;
+        }
+    };
+
+    // " abcdef" wraps into " abc" and "def".
+    const first_context_segment = try Find.line(display_lines.items, .context, " abc");
+    try std.testing.expectEqual(@as(usize, 0), first_context_segment.hunk_offset);
+
+    // The continuation segment starts at byte 3 in the stripped source
+    // "abcdef\n", because the first rendered segment consumed the diff prefix
+    // plus "abc" but the prefix is not present in the parsed source buffer.
+    const second_context_segment = try Find.line(display_lines.items, .context, "def");
+    try std.testing.expectEqual(@as(usize, 3), second_context_segment.hunk_offset);
+
+    // The removed line starts after the full stripped context line plus '\n'.
+    const first_remove_segment = try Find.line(display_lines.items, .remove, "-gon");
+    try std.testing.expectEqual(@as(usize, "abcdef\n".len), first_remove_segment.hunk_offset);
 }

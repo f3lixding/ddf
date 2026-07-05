@@ -4,14 +4,14 @@ const util = @import("../util.zig");
 const c = util.c;
 const treesitter = @import("../TreeSitter.zig");
 const ts = treesitter.ts;
-const Language = treesitter.Language;
+pub const Language = treesitter.Language;
 
 pub const HighlightSchema = struct {
     keyword: u32,
-    @"function": u32,
+    function: u32,
     string: u32,
     comment: u32,
-    @"type": u32,
+    type: u32,
     variable: u32,
     number: u32,
     punctuation: u32,
@@ -20,10 +20,10 @@ pub const HighlightSchema = struct {
     pub fn colorFor(self: HighlightSchema, kind: HighlightKind) u32 {
         return switch (kind) {
             .keyword => self.keyword,
-            .function => self.@"function",
+            .function => self.function,
             .string => self.string,
             .comment => self.comment,
-            .type => self.@"type",
+            .type => self.type,
             .variable => self.variable,
             .number => self.number,
             .punctuation => self.punctuation,
