@@ -117,19 +117,25 @@ pub const Diff = struct {
                     var new_buf: std.ArrayList(u8) = .empty;
                     defer new_buf.deinit(alloc);
 
-                    for (hunk_buf.items, 0..) |content, idx| {
-                        if (startsWith(u8, content, " ") or startsWith(u8, content, "-")) {
-                            try old_buf.append(alloc, ' ');
-                            try old_buf.appendSlice(alloc, content[1..]);
-                            if (idx < hunk_buf.items.len - 1) {
-                                try old_buf.append(alloc, '\n'); // does this new line matter?
-                            }
-                        } else if (startsWith(u8, content, "+")) {
-                            try new_buf.append(alloc, ' ');
-                            try new_buf.appendSlice(alloc, content[1..]);
-                            if (idx < hunk_buf.items.len - 1) {
+                    for (hunk_buf.items) |content| {
+                        if (content.len == 0) continue;
+
+                        switch (content[0]) {
+                            ' ' => {
+                                try old_buf.appendSlice(alloc, content[1..]);
+                                try old_buf.append(alloc, '\n');
+                                try new_buf.appendSlice(alloc, content[1..]);
                                 try new_buf.append(alloc, '\n');
-                            }
+                            },
+                            '-' => {
+                                try old_buf.appendSlice(alloc, content[1..]);
+                                try old_buf.append(alloc, '\n');
+                            },
+                            '+' => {
+                                try new_buf.appendSlice(alloc, content[1..]);
+                                try new_buf.append(alloc, '\n');
+                            },
+                            else => {},
                         }
                     }
 
@@ -329,8 +335,8 @@ pub const Hunk = struct {
                 width,
                 &old_buf_offset,
                 &new_buf_offset,
-                self.new_buf_hl_spans,
                 self.old_buf_hl_spans,
+                self.new_buf_hl_spans,
             ));
         }
 
@@ -420,6 +426,99 @@ const DisplayLine = struct {
         c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
         c.ncplane_set_bg_default(plane);
 
+        try self.fillLineBackground(plane, offset);
+
+        const spans = self.syntaxSpans() orelse {
+            try self.setBaseStyle(plane);
+            try putSegment(plane, offset, 0, self.text);
+            self.resetStyle(plane);
+            return;
+        };
+
+        const prefix_len = self.diffPrefixLen();
+        const source_start = self.hunk_offset;
+        const source_end = source_start + self.text.len - prefix_len;
+        var pos: usize = 0;
+        var x: c_int = 0;
+
+        for (spans) |span| {
+            if (span.end <= source_start) continue;
+            if (span.start >= source_end) break;
+
+            const source_local_start = if (span.start > source_start) span.start - source_start else 0;
+            const source_local_end = @min(span.end - source_start, source_end - source_start);
+            if (source_local_end <= source_local_start) continue;
+
+            const local_start = prefix_len + source_local_start;
+            const local_end = prefix_len + source_local_end;
+            if (local_end <= pos) continue;
+
+            if (pos < local_start) {
+                try self.setBaseStyle(plane);
+                const plain = self.text[pos..local_start];
+                try putSegment(plane, offset, x, plain);
+                x += @intCast(plain.len);
+            }
+
+            try setPackedFg(plane, default_schema.colorFor(span.kind));
+            const styled = self.text[local_start..local_end];
+            try putSegment(plane, offset, x, styled);
+            x += @intCast(styled.len);
+            pos = local_end;
+        }
+
+        if (pos < self.text.len) {
+            try self.setBaseStyle(plane);
+            try putSegment(plane, offset, x, self.text[pos..]);
+        }
+
+        self.resetStyle(plane);
+    }
+
+    fn syntaxSpans(self: DisplayLine) ?[]HighlightSpan {
+        return switch (self.kind) {
+            .context, .remove => self.old_buf_hl_spans,
+            .add => self.new_buf_hl_spans,
+            .file_header, .hunk_header => null,
+        };
+    }
+
+    fn diffPrefixLen(self: DisplayLine) usize {
+        if (self.text.len == 0) return 0;
+
+        return switch (self.kind) {
+            .context => if (self.text[0] == ' ') 1 else 0,
+            .add => if (self.text[0] == '+') 1 else 0,
+            .remove => if (self.text[0] == '-') 1 else 0,
+            .file_header, .hunk_header => 0,
+        };
+    }
+
+    fn fillLineBackground(self: DisplayLine, plane: *c.ncplane, y: c_int) !void {
+        switch (self.kind) {
+            .add, .remove => {},
+            else => return,
+        }
+
+        var cols: c_uint = 0;
+        c.ncplane_dim_yx(plane, null, &cols);
+
+        try self.setBaseStyle(plane);
+
+        const spaces = "                                ";
+        var x: c_int = 0;
+        var remaining: usize = cols;
+        while (remaining > 0) {
+            const n = @min(remaining, spaces.len);
+            try putSegment(plane, y, x, spaces[0..n]);
+            x += @intCast(n);
+            remaining -= n;
+        }
+    }
+
+    fn setBaseStyle(self: DisplayLine, plane: *c.ncplane) !void {
+        c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
+
         switch (self.kind) {
             .file_header => {
                 c.ncplane_set_styles(plane, c.NCSTYLE_BOLD);
@@ -430,22 +529,38 @@ const DisplayLine = struct {
             },
             .context => {
                 c.ncplane_set_fg_default(plane);
+                c.ncplane_set_bg_default(plane);
             },
             .add => {
-                if (c.ncplane_set_fg_rgb8(plane, 0x87, 0xd7, 0x87) < 0) return error.SetColorFailed;
+                c.ncplane_set_fg_default(plane);
+                if (c.ncplane_set_bg_rgb8(plane, 0x1f, 0x3d, 0x2a) < 0) return error.SetColorFailed;
             },
             .remove => {
-                if (c.ncplane_set_fg_rgb8(plane, 0xff, 0x87, 0x87) < 0) return error.SetColorFailed;
+                c.ncplane_set_fg_default(plane);
+                if (c.ncplane_set_bg_rgb8(plane, 0x4a, 0x22, 0x22) < 0) return error.SetColorFailed;
             },
         }
+    }
 
-        if (c.ncplane_putnstr_yx(plane, offset, 0, self.text.len, self.text.ptr) < 0) {
-            return error.PutStrFailed;
-        }
-
+    fn resetStyle(self: DisplayLine, plane: *c.ncplane) void {
+        _ = self;
         c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
         c.ncplane_set_fg_default(plane);
         c.ncplane_set_bg_default(plane);
+    }
+
+    fn setPackedFg(plane: *c.ncplane, rgb: u32) !void {
+        const r: c_uint = @intCast((rgb >> 16) & 0xff);
+        const g: c_uint = @intCast((rgb >> 8) & 0xff);
+        const b: c_uint = @intCast(rgb & 0xff);
+        if (c.ncplane_set_fg_rgb8(plane, r, g, b) < 0) return error.SetColorFailed;
+    }
+
+    fn putSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !void {
+        if (text.len == 0) return;
+        if (c.ncplane_putnstr_yx(plane, y, x, text.len, text.ptr) < 0) {
+            return error.PutStrFailed;
+        }
     }
 };
 
