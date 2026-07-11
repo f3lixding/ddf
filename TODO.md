@@ -1,4 +1,7 @@
 # TODO
+- [ ] Clean up splash screen on new component mount (this requires adding two new methods on the Component interface)
+- [ ] Terminate keymap stack eval early on diff viewer
+- [ ] Fix coreLoop choosing either key handling _or_ tick (it should do both when applicable)
 - [ ] Border and custom formatting
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] Refine grapheme width estimation with real notcurses api

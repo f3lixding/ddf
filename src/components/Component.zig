@@ -25,6 +25,8 @@ pub const VTable = struct {
             return true;
         }
     }.isDirty,
+    wake: ?*const fn (*anyopaque) anyerror!void = null,
+    hide: ?*const fn (*anyopaque) anyerror!void = null,
 };
 
 /// Called to update internal state that depends on app-loop time, such as
@@ -57,4 +59,18 @@ pub fn handleInputEvent(self: Component, evt: InputEvent) anyerror!Conclusion {
 pub fn cleanUp(self: Component) anyerror!void {
     const cleanUpFn = self.vtable.clean_up orelse return;
     try cleanUpFn(self.ptr);
+}
+
+/// Opposite to hide. This should restore a Component's normal state
+/// This is called on the new top Component when a Component is unmounted
+pub fn wake(self: Component) anyerror!void {
+    const wakeFn = self.vtable.wake orelse return;
+    return try wakeFn(self.ptr);
+}
+
+/// Components that are hidden should not be called upon for update and render
+/// This function is an opportunity for Components to clear their planes
+pub fn hide(self: Component) anyerror!void {
+    const hideFn = self.vtable.hide orelse return;
+    return try hideFn(self.ptr);
 }

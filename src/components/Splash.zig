@@ -24,6 +24,8 @@ alloc: std.mem.Allocator,
 io: std.Io,
 input_bucket: Bucket,
 initial_render_done: bool = false,
+hidden: bool = false,
+hiding: bool = false,
 gif: ?Gif = null,
 logo: [5][:0]const u8 = .{
     "     ____  ______ ",
@@ -43,31 +45,30 @@ pub fn initInterface(self: *Self) Component {
                     try @call(.always_inline, render, .{ self_typed, render_ctx });
                 }
             }._render,
-
             .is_dirty = struct {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return if (self_typed.gif) |g|
-                        g.dirty
-                    else
-                        false;
+                    if (self_typed.hiding) return true;
+                    if (self_typed.hidden) return false;
+
+                    return if (self_typed.gif) |g| gif: {
+                        const res = if (g.hidden) false else g.dirty;
+                        break :gif res;
+                    } else false;
                 }
             }.isDirty,
-
             .key_handler = struct {
                 pub fn handleInput(ptr: *anyopaque, event: InputEvent) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, handleInputEvent, .{ self_typed, event });
                 }
             }.handleInput,
-
             .update = struct {
                 pub fn _update(ptr: *anyopaque, ft: FrameTime) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, update, .{ self_typed, ft });
                 }
             }._update,
-
             .update_interval = struct {
                 pub fn updateInterval(ptr: *anyopaque) i64 {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
@@ -77,6 +78,20 @@ pub fn initInterface(self: *Self) Component {
                     return 1000;
                 }
             }.updateInterval,
+
+            .wake = struct {
+                pub fn wake_(ptr: *anyopaque) !void {
+                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
+                    return try @call(.always_inline, wake, .{self_typed});
+                }
+            }.wake_,
+
+            .hide = struct {
+                pub fn hide_(ptr: *anyopaque) !void {
+                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
+                    return try @call(.always_inline, hide, .{self_typed});
+                }
+            }.hide_,
         },
     };
 }
@@ -85,6 +100,7 @@ const Gif = struct {
     visual: *c.ncvisual,
     plane: *c.ncplane,
     vopts: c.ncvisual_options,
+    hidden: bool = false,
 
     frame_interval_ms: i64 = 1000 / 24,
     elapsed_ms: i64 = 0,
@@ -182,6 +198,7 @@ const Gif = struct {
     }
 
     pub fn render(self: *Gif, nc_ctx: *c.notcurses) !void {
+        if (self.hidden) return;
         if (!self.dirty) return;
 
         c.ncplane_erase(self.plane);
@@ -201,6 +218,17 @@ const Gif = struct {
         }
 
         self.dirty = false;
+    }
+
+    pub fn hide(self: *Gif) void {
+        c.ncplane_erase(self.plane);
+        self.hidden = true;
+        self.dirty = false;
+    }
+
+    pub fn unhide(self: *Gif) void {
+        self.hidden = false;
+        self.dirty = true;
     }
 
     fn shouldTryPixelBlit(nc_ctx: *c.notcurses) bool {
@@ -251,7 +279,10 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
             self.initial_render_done = false;
         },
         else => {
-            const input_slice = try self.input_bucket.insertAndReport(input_event);
+            const input_slice = self.input_bucket.insertAndReport(input_event) catch retry: {
+                self.input_bucket.clear();
+                break :retry try self.input_bucket.insertAndReport(input_event);
+            };
             // TODO: codify this routine
             const open_diff = " df";
             var iter = input_slice.iterator();
@@ -272,7 +303,10 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     const diff_window = try self.alloc.create(DiffWindow);
                     errdefer self.alloc.destroy(diff_window);
                     diff_window.* = try DiffWindow.init(self.alloc, self.io);
-                    return .{ .Mount = diff_window.initInterface() };
+
+                    self.hiding = true;
+
+                    return .{ .Mount = .{ .component = diff_window.initInterface(), .hide = true } };
                 }
             }
         },
@@ -283,6 +317,8 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     const nc_ctx = render_ctx.nc_ctx;
+
+    if (self.hidden and !self.hiding) return;
 
     if (!self.initial_render_done) {
         var rows: c_uint = 0;
@@ -324,16 +360,53 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         if (self.gif) |*gif| {
             try gif.move(origin_y, gif_x);
         }
+    } else if (self.hiding) {
+        self.hiding = false;
+
+        const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
+        c.ncplane_erase(stdplane);
+        c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
+        c.ncplane_set_fg_default(stdplane);
+        c.ncplane_set_bg_default(stdplane);
+
+        if (self.gif) |*gif| {
+            gif.hide();
+        }
+
+        return;
     }
 
     if (self.gif) |*gif| try gif.render(nc_ctx);
 }
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {
+    if (self.hidden) return .Noop;
+
     if (self.gif) |*gif| {
         return try gif.update(ft);
     }
     return .Noop;
+}
+
+pub fn wake(self: *Self) !void {
+    self.hidden = false;
+    self.hiding = false;
+    self.initial_render_done = false;
+    self.input_bucket.clear();
+
+    if (self.gif) |*gif| {
+        gif.unhide();
+    }
+}
+
+pub fn hide(self: *Self) !void {
+    self.hidden = true;
+    self.hiding = true;
+    self.input_bucket.clear();
+
+    if (self.gif) |*gif| {
+        gif.dirty = false;
+    }
 }
 
 fn centered(outer: c_uint, inner: c_uint) c_int {

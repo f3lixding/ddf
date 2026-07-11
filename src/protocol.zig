@@ -20,7 +20,12 @@ pub const FrameTime = struct {
 pub const Conclusion = union(enum) {
     /// This would mean the component is already created
     /// This is so that the orchestrator can properly manage it
-    Mount: Component,
+    Mount: struct {
+        /// The component to mount
+        component: Component,
+        /// Denotes whether or not to hide self before mounting component
+        hide: bool,
+    },
 
     /// This is always talking about self
     Dismount,

@@ -91,14 +91,16 @@ fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
         if (recv_res) |evt| {
             self.handleInputEvent(nc_ctx, evt) catch |err| switch (err) {
                 error.Terminate => break,
-                else => {},
+                else => std.log.scoped(.app).err("input handler failed: {any}", .{err}),
             };
         } else |err| switch (err) {
             error.Timeout => {
-                try self.tick(frame_time);
+                // we handle this outside of this block
             },
             else => return err,
         }
+
+        try self.tick(frame_time);
 
         try self.render(nc_ctx);
     }
@@ -120,12 +122,20 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
             .Dismount => {
                 const to_remove = self.components.orderedRemove(i);
                 try to_remove.cleanUp();
+
+                if (i > 0) {
+                    try self.components.items[i - 1].wake();
+                }
+
                 break;
             },
             .Mount => |to_mount| {
                 // Iterating by index from the original end means newly-mounted
                 // components do not handle the same input event that mounted them.
-                try self.components.append(self.alloc, to_mount);
+                if (to_mount.hide) {
+                    try self.components.items[i].hide();
+                }
+                try self.components.append(self.alloc, to_mount.component);
             },
             .Quit => return error.Terminate,
             .Noop => continue,
@@ -148,7 +158,7 @@ fn tick(self: *Self, frame_time: FrameTime) !void {
             .Mount => |to_mount| {
                 // Iterating by index from the original end means newly-mounted
                 // components do not handle the same input event that mounted them.
-                try self.components.append(self.alloc, to_mount);
+                try self.components.append(self.alloc, to_mount.component);
             },
             .Quit => return error.Terminate,
             .Noop => continue,
