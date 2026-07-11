@@ -79,7 +79,7 @@ const Opts = struct {
         var app = App.init(alloc, channel.rx);
         const Splash = @import("components/Splash.zig");
         const splash = try alloc.create(Splash);
-        splash.* = try .init(nc_ctx);
+        splash.* = try .init(alloc, io, nc_ctx);
         try app.components.append(alloc, splash.initInterface());
 
         defer app.deinit(io);

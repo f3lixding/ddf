@@ -1,5 +1,4 @@
 # TODO
-- [ ] Syntax highlighting
 - [ ] Border and custom formatting
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] Refine grapheme width estimation with real notcurses api
@@ -8,6 +7,7 @@
 - [ ] Refine arg sets 
 
 # DONE
+- [x] Syntax highlighting
 - [x] Diff viewer
 - [x] Splash screen (this would also be where we come up with layout structure and perhaps refine Component interface)
 - [x] Generic, configurable input handler. This is to be reused by different Components

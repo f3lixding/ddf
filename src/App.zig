@@ -120,6 +120,7 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
             .Dismount => {
                 const to_remove = self.components.orderedRemove(i);
                 try to_remove.cleanUp();
+                break;
             },
             .Mount => |to_mount| {
                 // Iterating by index from the original end means newly-mounted

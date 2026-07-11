@@ -271,6 +271,35 @@ pub fn LeakyBucket(comptime T: type) type {
         pub const Slice = struct {
             first: []T,
             second: ?[]T,
+
+            pub const Iterator = struct {
+                idx: usize = 0,
+                slice: *const Slice,
+
+                pub fn next(self: *Iterator) ?*T {
+                    if (self.slice.first.len > self.idx) {
+                        const idx = self.idx;
+                        self.idx += 1;
+                        return &self.slice.first[idx];
+                    }
+
+                    const second = self.slice.second orelse return null;
+                    const second_idx = self.idx - self.slice.first.len;
+
+                    if (second_idx < second.len) {
+                        self.idx += 1;
+                        return &second[second_idx];
+                    }
+
+                    return null;
+                }
+            };
+
+            pub fn iterator(self: *const Slice) Iterator {
+                return .{
+                    .slice = self,
+                };
+            }
         };
 
         const Self = @This();

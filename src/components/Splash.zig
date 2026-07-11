@@ -10,14 +10,18 @@ const InputEvent = protocol.InputEvent;
 const FrameTime = protocol.FrameTime;
 const Conclusion = protocol.Conclusion;
 const Component = @import("Component.zig");
+const DiffWindow = @import("DiffWindow.zig");
 const Bucket = util.LeakyBucket(InputEvent);
 const RenderCtx = protocol.RenderCtx;
 const ASSET_PATH = consts.ASSET_PATH;
+const logging = std.log.scoped(.splash);
 
 const cat_gif = @embedFile("../assets/scuba-scuba-cat.gif");
 
 const Self = @This();
 
+alloc: std.mem.Allocator,
+io: std.Io,
 input_bucket: Bucket,
 initial_render_done: bool = false,
 gif: ?Gif = null,
@@ -225,12 +229,14 @@ const Gif = struct {
     }
 };
 
-pub fn init(nc_ctx: *c.notcurses) !Self {
+pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
     const input_bucket = Bucket.init(.{});
     const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
     const gif = try Gif.init(nc_ctx, stdplane, .{ .height = 20 });
 
     return .{
+        .alloc = alloc,
+        .io = io,
         .input_bucket = input_bucket,
         .gif = gif,
     };
@@ -244,7 +250,32 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         c.NCKEY_RESIZE => {
             self.initial_render_done = false;
         },
-        else => {},
+        else => {
+            const input_slice = try self.input_bucket.insertAndReport(input_event);
+            // TODO: codify this routine
+            const open_diff = " df";
+            var iter = input_slice.iterator();
+
+            var last_relevant_evt: ?*InputEvent = null;
+            var count: usize = 0;
+            while (iter.next()) |event| {
+                if (event.key == open_diff[0]) {
+                    count = 1;
+                    last_relevant_evt = event;
+                    continue;
+                }
+
+                if (event.key == open_diff[count])
+                    count += 1;
+
+                if (count >= open_diff.len) {
+                    const diff_window = try self.alloc.create(DiffWindow);
+                    errdefer self.alloc.destroy(diff_window);
+                    diff_window.* = try DiffWindow.init(self.alloc, self.io);
+                    return .{ .Mount = diff_window.initInterface() };
+                }
+            }
+        },
     }
 
     return .Noop;
