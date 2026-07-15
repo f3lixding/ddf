@@ -44,14 +44,20 @@ pub const HighlightKind = enum {
     unknown,
 
     fn fromCaptureName(name: []const u8) HighlightKind {
-        const eql = std.mem.eql;
+        const startsWith = std.mem.startsWith;
 
-        if (eql(u8, name, "keyword")) return .keyword;
-        if (eql(u8, name, "function")) return .function;
-        if (eql(u8, name, "string")) return .string;
-        if (eql(u8, name, "comment")) return .comment;
-        if (eql(u8, name, "type")) return .type;
-        if (eql(u8, name, "number")) return .number;
+        // Tree-sitter highlight queries commonly use dotted capture names such
+        // as `keyword.function`, `variable.parameter`, and
+        // `punctuation.bracket`. Collapse those to the base kind supported by
+        // our small schema.
+        if (startsWith(u8, name, "keyword")) return .keyword;
+        if (startsWith(u8, name, "function")) return .function;
+        if (startsWith(u8, name, "string")) return .string;
+        if (startsWith(u8, name, "comment")) return .comment;
+        if (startsWith(u8, name, "type")) return .type;
+        if (startsWith(u8, name, "variable")) return .variable;
+        if (startsWith(u8, name, "number")) return .number;
+        if (startsWith(u8, name, "punctuation")) return .punctuation;
 
         return .unknown;
     }
@@ -154,8 +160,12 @@ test "capture names map to highlight kinds" {
     try std.testing.expectEqual(HighlightKind.string, HighlightKind.fromCaptureName("string"));
     try std.testing.expectEqual(HighlightKind.comment, HighlightKind.fromCaptureName("comment"));
     try std.testing.expectEqual(HighlightKind.type, HighlightKind.fromCaptureName("type"));
+    try std.testing.expectEqual(HighlightKind.variable, HighlightKind.fromCaptureName("variable"));
     try std.testing.expectEqual(HighlightKind.number, HighlightKind.fromCaptureName("number"));
-    try std.testing.expectEqual(HighlightKind.unknown, HighlightKind.fromCaptureName("keyword.function"));
+    try std.testing.expectEqual(HighlightKind.punctuation, HighlightKind.fromCaptureName("punctuation"));
+    try std.testing.expectEqual(HighlightKind.keyword, HighlightKind.fromCaptureName("keyword.function"));
+    try std.testing.expectEqual(HighlightKind.variable, HighlightKind.fromCaptureName("variable.parameter"));
+    try std.testing.expectEqual(HighlightKind.punctuation, HighlightKind.fromCaptureName("punctuation.bracket"));
 }
 
 test "highlights zig source" {

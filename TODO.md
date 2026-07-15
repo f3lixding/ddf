@@ -1,15 +1,16 @@
 # TODO
-- [ ] Terminate keymap stack eval early on diff viewer
-- [ ] Fix coreLoop choosing either key handling _or_ tick (it should do both when applicable)
 - [ ] Border and custom formatting
+- [ ] Cursor (this would probably need to be a subcomponent within diff view)
+- [ ] Refine arg sets 
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Streaming api for diff invocation
 - [ ] Proper starting args
-- [ ] Refine arg sets 
 
 # DONE
-- [x] Clean up splash screen on new component mount (this requires adding two new methods on the Component interface)
+- [x] Syntax highlight style application
+- [x] Fix coreLoop choosing either key handling _or_ tick (it should do both when applicable)
+- [x] Terminate keymap stack eval early on diff viewer
 - [x] Syntax highlighting
 - [x] Diff viewer
 - [x] Splash screen (this would also be where we come up with layout structure and perhaps refine Component interface)

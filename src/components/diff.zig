@@ -11,15 +11,15 @@ const Language = highlight.Language;
 const startsWith = std.mem.startsWith;
 
 const default_schema: HighlightSchema = .{
-    .keyword = 0x569cd6, // blue
-    .function = 0xdcdcaa, // soft yellow
-    .string = 0xce9178, // salmon/orange
-    .comment = 0x6a9955, // muted green
-    .type = 0x4ec9b0, // teal
-    .variable = 0x9cdcfe, // light blue
-    .number = 0xb5cea8, // pale green
-    .punctuation = 0xd4d4d4, // neutral foreground
-    .unknown = 0xd4d4d4, // neutral foreground
+    .keyword = 0xfb4934, // gruvbox bright red
+    .function = 0xfabd2f, // gruvbox bright yellow
+    .string = 0xb8bb26, // gruvbox bright green
+    .comment = 0x928374, // gruvbox gray
+    .type = 0x8ec07c, // gruvbox bright aqua
+    .variable = 0x83a598, // gruvbox bright blue
+    .number = 0xd3869b, // gruvbox bright purple
+    .punctuation = 0xebdbb2, // gruvbox foreground
+    .unknown = 0xebdbb2, // gruvbox foreground
 };
 
 pub const Diff = struct {
