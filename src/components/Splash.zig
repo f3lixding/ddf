@@ -45,6 +45,7 @@ pub fn initInterface(self: *Self) Component {
                     try @call(.always_inline, render, .{ self_typed, render_ctx });
                 }
             }._render,
+
             .is_dirty = struct {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
@@ -57,18 +58,21 @@ pub fn initInterface(self: *Self) Component {
                     } else false;
                 }
             }.isDirty,
+
             .key_handler = struct {
                 pub fn handleInput(ptr: *anyopaque, event: InputEvent) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, handleInputEvent, .{ self_typed, event });
                 }
             }.handleInput,
+
             .update = struct {
                 pub fn _update(ptr: *anyopaque, ft: FrameTime) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, update, .{ self_typed, ft });
                 }
             }._update,
+
             .update_interval = struct {
                 pub fn updateInterval(ptr: *anyopaque) i64 {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
@@ -271,6 +275,10 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
 }
 
 pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
+    if (self.hidden) {
+        return .Noop;
+    }
+
     const key = input_event.key;
 
     switch (key) {
