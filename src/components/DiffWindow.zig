@@ -22,7 +22,8 @@ alloc: std.mem.Allocator,
 output: []u8,
 stderr: []u8,
 diff: ?Diff = null,
-plane: ?*c.ncplane = null,
+main_plane: ?*c.ncplane = null,
+sub_plane: ?*c.ncplane = null,
 dirty: bool = true,
 
 pub fn initInterface(self: *Self) Component {
@@ -94,9 +95,13 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
 }
 
 pub fn deinit(self: *Self) void {
-    if (self.plane) |plane| {
+    if (self.main_plane) |plane| {
         _ = c.ncplane_destroy(plane);
-        self.plane = null;
+        self.main_plane = null;
+    }
+    if (self.sub_plane) |plane| {
+        _ = c.ncplane_destroy(plane);
+        self.sub_plane = null;
     }
 
     if (self.diff) |*diff| {
@@ -127,6 +132,26 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 }
             }
         },
+        'u', 'U' => {
+            if (self.diff) |*diff| {
+                if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                    if (diff.top_line > 0) {
+                        diff.top_line = diff.top_line -| 10;
+                        self.dirty = true;
+                    }
+                }
+            }
+        },
+        'd', 'D' => {
+            if (self.diff) |*diff| {
+                if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                    if (diff.top_line + 10 < diff.display_lines.items.len) {
+                        diff.top_line = diff.top_line +| 10;
+                        self.dirty = true;
+                    }
+                }
+            }
+        },
         c.NCKEY_RESIZE => self.dirty = true,
         else => {},
     }
@@ -135,16 +160,22 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
-    const plane = try self.ensurePlane(render_ctx);
+    const planes = try self.ensurePlane(render_ctx);
+    const main_plane = planes.main_plane;
+    const sub_plane = planes.sub_plane;
+
+    try drawBorder(main_plane);
 
     if (self.diff) |*diff| {
-        const width = @max(@as(c_uint, 1), render_ctx.term_cols);
-        try diff.update(width);
-        try diff.render(render_ctx.nc_ctx, plane);
+        var rows: c_uint = 0;
+        var cols: c_uint = 0;
+        c.ncplane_dim_yx(sub_plane, &rows, &cols);
+        try diff.update(cols);
+        try diff.render(render_ctx.nc_ctx, sub_plane);
     } else {
-        c.ncplane_erase(plane);
+        c.ncplane_erase(sub_plane);
         const msg = "No diff to display";
-        if (c.ncplane_putnstr_yx(plane, 0, 0, msg.len, msg.ptr) < 0) {
+        if (c.ncplane_putnstr_yx(sub_plane, 0, 0, msg.len, msg.ptr) < 0) {
             return error.PutStrFailed;
         }
     }
@@ -158,29 +189,101 @@ pub fn update(self: *Self, ft: FrameTime) !Conclusion {
     return .Noop;
 }
 
-fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !*c.ncplane {
+fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
+    main_plane: *c.ncplane,
+    sub_plane: *c.ncplane,
+} {
     const rows = @max(@as(c_uint, 1), render_ctx.term_rows);
     const cols = @max(@as(c_uint, 1), render_ctx.term_cols);
 
-    if (self.plane) |plane| {
+    if (self.main_plane) |plane| {
         if (c.ncplane_resize_simple(plane, rows, cols) < 0) {
             return error.ResizePlaneFailed;
         }
         if (c.ncplane_move_yx(plane, 0, 0) < 0) {
             return error.MovePlaneFailed;
         }
-        return plane;
+    } else {
+        const stdplane = c.notcurses_stdplane(render_ctx.nc_ctx) orelse return error.NoStdplane;
+        var opts = std.mem.zeroes(c.ncplane_options);
+        opts.y = 0;
+        opts.x = 0;
+        opts.rows = rows;
+        opts.cols = cols;
+        opts.name = "diff_window_main_plane";
+
+        const plane = c.ncplane_create(stdplane, &opts) orelse return error.CreatePlaneFailed;
+        self.main_plane = plane;
     }
 
-    const stdplane = c.notcurses_stdplane(render_ctx.nc_ctx) orelse return error.NoStdplane;
-    var opts = std.mem.zeroes(c.ncplane_options);
-    opts.y = 0;
-    opts.x = 0;
-    opts.rows = rows;
-    opts.cols = cols;
-    opts.name = "diff-window";
+    if (self.sub_plane) |plane| {
+        const rows_ = if (rows >= 2) rows - 2 else rows;
+        const cols_ = if (cols >= 2) cols - 2 else cols;
+        if (c.ncplane_resize_simple(plane, rows_, cols_) < 0) {
+            return error.ResizePlaneFailed;
+        }
+        if (c.ncplane_move_yx(plane, 1, 1) < 0) {
+            return error.MovePlaneFailed;
+        }
+    } else {
+        const main_plane = self.main_plane.?;
+        var opts = std.mem.zeroes(c.ncplane_options);
+        opts.y = 1;
+        opts.x = 1;
+        opts.rows = if (rows >= 2) rows - 2 else rows;
+        opts.cols = if (cols >= 2) cols - 2 else cols;
+        opts.name = "diff_window_sub_plane";
 
-    const plane = c.ncplane_create(stdplane, &opts) orelse return error.CreatePlaneFailed;
-    self.plane = plane;
-    return plane;
+        const plane = c.ncplane_create(main_plane, &opts) orelse return error.CreatePlaneFailed;
+        self.sub_plane = plane;
+    }
+
+    return .{
+        .sub_plane = self.sub_plane.?,
+        .main_plane = self.main_plane.?,
+    };
+}
+
+fn drawBorder(plane: *c.ncplane) !void {
+    c.ncplane_erase(plane);
+
+    var rows: c_uint = 0;
+    var cols: c_uint = 0;
+    c.ncplane_dim_yx(plane, &rows, &cols);
+    if (rows < 2 or cols < 2) return;
+
+    const last_y: c_int = @intCast(rows - 1);
+    const last_x: c_int = @intCast(cols - 1);
+
+    c.ncplane_set_styles(plane, c.NCSTYLE_BOLD);
+    if (c.ncplane_set_fg_rgb8(plane, 0x83, 0xa5, 0x98) < 0) {
+        return error.DrawBorderFailed;
+    }
+    defer {
+        c.ncplane_set_styles(plane, c.NCSTYLE_NONE);
+        c.ncplane_set_fg_default(plane);
+    }
+
+    try putBorderSegment(plane, 0, 0, "┏");
+    try putBorderSegment(plane, 0, last_x, "┓");
+    try putBorderSegment(plane, last_y, 0, "┗");
+    try putBorderSegment(plane, last_y, last_x, "┛");
+
+    var x: c_int = 1;
+    while (x < last_x) : (x += 1) {
+        try putBorderSegment(plane, 0, x, "━");
+        try putBorderSegment(plane, last_y, x, "━");
+    }
+
+    var y: c_int = 1;
+    while (y < last_y) : (y += 1) {
+        try putBorderSegment(plane, y, 0, "┃");
+        try putBorderSegment(plane, y, last_x, "┃");
+    }
+}
+
+fn putBorderSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !void {
+    if (c.ncplane_putnstr_yx(plane, y, x, text.len, text.ptr) < 0) {
+        return error.DrawBorderFailed;
+    }
 }
