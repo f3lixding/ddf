@@ -31,6 +31,7 @@ pub const Diff = struct {
     did_wrap: bool,
     alloc: std.mem.Allocator,
     highlight_schema: HighlightSchema = default_schema,
+    focus_line: usize = 0,
 
     /// The caller needs to ensure the input stays intact until deinit is
     /// called. The construction of Diff as well as its children makes no

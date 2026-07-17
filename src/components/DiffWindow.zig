@@ -12,6 +12,7 @@ const Bucket = util.LeakyBucket(InputEvent);
 const RenderCtx = protocol.RenderCtx;
 const ASSET_PATH = consts.ASSET_PATH;
 const Diff = @import("diff.zig").Diff;
+const LineIndicator = @import("LineIndicator.zig");
 
 const Self = @This();
 
@@ -24,6 +25,9 @@ stderr: []u8,
 diff: ?Diff = null,
 main_plane: ?*c.ncplane = null,
 sub_plane: ?*c.ncplane = null,
+indicator_plane: ?*c.ncplane = null,
+line_indicator: ?LineIndicator = null,
+focus_line: usize = 0,
 dirty: bool = true,
 
 pub fn initInterface(self: *Self) Component {
@@ -40,7 +44,9 @@ pub fn initInterface(self: *Self) Component {
             .is_dirty = struct {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return self_typed.dirty;
+                    if (self_typed.dirty) return true;
+                    if (self_typed.line_indicator) |indicator| return indicator.isDirty();
+                    return false;
                 }
             }.isDirty,
 
@@ -57,6 +63,13 @@ pub fn initInterface(self: *Self) Component {
                     return try @call(.always_inline, update, .{ self_typed, ft });
                 }
             }._update,
+
+            .update_interval = struct {
+                pub fn updateInterval(ptr: *anyopaque) i64 {
+                    _ = ptr;
+                    return 1000 / 24;
+                }
+            }.updateInterval,
 
             .clean_up = struct {
                 pub fn cleanUp(ptr: *anyopaque) !void {
@@ -95,15 +108,22 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
 }
 
 pub fn deinit(self: *Self) void {
-    if (self.main_plane) |plane| {
+    if (self.line_indicator) |*indicator| {
+        indicator.deinit();
+        self.line_indicator = null;
+    }
+    if (self.indicator_plane) |plane| {
         _ = c.ncplane_destroy(plane);
-        self.main_plane = null;
+        self.indicator_plane = null;
     }
     if (self.sub_plane) |plane| {
         _ = c.ncplane_destroy(plane);
         self.sub_plane = null;
     }
-
+    if (self.main_plane) |plane| {
+        _ = c.ncplane_destroy(plane);
+        self.main_plane = null;
+    }
     if (self.diff) |*diff| {
         diff.deinit(self.alloc);
         self.diff = null;
@@ -163,9 +183,11 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     const planes = try self.ensurePlane(render_ctx);
     const main_plane = planes.main_plane;
     const sub_plane = planes.sub_plane;
+    const indicator_plane = planes.line_indicator_plane;
 
     try drawBorder(main_plane);
 
+    // TODO: because we have multiple planes now we would need to understand which plane is dirty
     if (self.diff) |*diff| {
         var rows: c_uint = 0;
         var cols: c_uint = 0;
@@ -180,18 +202,27 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         }
     }
 
+    if (self.line_indicator) |*indicator| {
+        try indicator.render(render_ctx.nc_ctx);
+    } else {
+        c.ncplane_erase(indicator_plane);
+    }
+
     self.dirty = false;
 }
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {
-    _ = self;
-    _ = ft;
+    if (self.line_indicator) |*indicator| {
+        return try indicator.update(ft);
+    }
+
     return .Noop;
 }
 
 fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     main_plane: *c.ncplane,
     sub_plane: *c.ncplane,
+    line_indicator_plane: *c.ncplane,
 } {
     const rows = @max(@as(c_uint, 1), render_ctx.term_rows);
     const cols = @max(@as(c_uint, 1), render_ctx.term_cols);
@@ -218,29 +249,64 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
 
     if (self.sub_plane) |plane| {
         const rows_ = if (rows >= 2) rows - 2 else rows;
-        const cols_ = if (cols >= 2) cols - 2 else cols;
+        const cols_ = if (cols >= 4) cols - 4 else cols;
         if (c.ncplane_resize_simple(plane, rows_, cols_) < 0) {
             return error.ResizePlaneFailed;
         }
-        if (c.ncplane_move_yx(plane, 1, 1) < 0) {
+        if (c.ncplane_move_yx(plane, 1, 3) < 0) {
             return error.MovePlaneFailed;
         }
     } else {
         const main_plane = self.main_plane.?;
         var opts = std.mem.zeroes(c.ncplane_options);
         opts.y = 1;
-        opts.x = 1;
+        opts.x = 3;
         opts.rows = if (rows >= 2) rows - 2 else rows;
-        opts.cols = if (cols >= 2) cols - 2 else cols;
+        opts.cols = if (cols >= 4) cols - 4 else cols;
         opts.name = "diff_window_sub_plane";
 
         const plane = c.ncplane_create(main_plane, &opts) orelse return error.CreatePlaneFailed;
         self.sub_plane = plane;
     }
 
+    if (self.indicator_plane) |plane| {
+        const main_plane = self.main_plane.?;
+        const main_cols = c.ncplane_dim_x(main_plane);
+        if (c.ncplane_resize_simple(plane, 1, @max(@as(c_uint, 1), main_cols -| 2)) < 0) {
+            return error.ResizePlaneFailed;
+        }
+        if (c.ncplane_move_yx(plane, @intCast(self.focus_line), 1) < 0) {
+            return error.MovePlaneFailed;
+        }
+    } else {
+        const main_plane = self.main_plane.?;
+        const main_cols = c.ncplane_dim_x(main_plane);
+
+        var opts = std.mem.zeroes(c.ncplane_options);
+        opts.y = 1;
+        opts.x = 1;
+        opts.rows = 2;
+        opts.cols = @max(@as(c_uint, 1), main_cols -| 2);
+        opts.name = "line_indicator_plane";
+
+        const plane = c.ncplane_create(main_plane, &opts) orelse return error.CreatePlaneFailed;
+        self.indicator_plane = plane;
+    }
+
+    if (self.line_indicator == null) {
+        self.line_indicator = try LineIndicator.init(render_ctx.nc_ctx, self.indicator_plane.?, .{
+            .y = 1,
+            .x = 0,
+            .height = 2,
+        });
+    } else if (self.line_indicator) |*indicator| {
+        try indicator.gif.move(0, 0);
+    }
+
     return .{
         .sub_plane = self.sub_plane.?,
         .main_plane = self.main_plane.?,
+        .line_indicator_plane = self.indicator_plane.?,
     };
 }
 

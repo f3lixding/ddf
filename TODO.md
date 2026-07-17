@@ -1,5 +1,6 @@
 # TODO
 - [ ] Cursor (this would probably need to be a subcomponent within diff view)
+- [ ] Add line number
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
