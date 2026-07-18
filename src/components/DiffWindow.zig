@@ -28,6 +28,7 @@ sub_plane: ?*c.ncplane = null,
 indicator_plane: ?*c.ncplane = null,
 line_indicator: ?LineIndicator = null,
 focus_line: usize = 0,
+viewport_rows: usize = 1,
 dirty: bool = true,
 
 pub fn initInterface(self: *Self) Component {
@@ -138,16 +139,14 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         'q', c.NCKEY_ESC => return .Dismount,
         'j', c.NCKEY_DOWN => {
             if (self.diff) |*diff| {
-                if (diff.top_line + 1 < diff.display_lines.items.len) {
-                    diff.top_line += 1;
+                if (self.moveFocusDown(diff)) {
                     self.dirty = true;
                 }
             }
         },
         'k', c.NCKEY_UP => {
             if (self.diff) |*diff| {
-                if (diff.top_line > 0) {
-                    diff.top_line -= 1;
+                if (self.moveFocusUp(diff)) {
                     self.dirty = true;
                 }
             }
@@ -155,8 +154,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         'u', 'U' => {
             if (self.diff) |*diff| {
                 if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                    if (diff.top_line > 0) {
-                        diff.top_line = diff.top_line -| 10;
+                    if (self.moveFocusPageUp(diff)) {
                         self.dirty = true;
                     }
                 }
@@ -165,8 +163,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         'd', 'D' => {
             if (self.diff) |*diff| {
                 if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                    if (diff.top_line + 10 < diff.display_lines.items.len) {
-                        diff.top_line = diff.top_line +| 10;
+                    if (self.moveFocusPageDown(diff)) {
                         self.dirty = true;
                     }
                 }
@@ -192,6 +189,7 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         var rows: c_uint = 0;
         var cols: c_uint = 0;
         c.ncplane_dim_yx(sub_plane, &rows, &cols);
+        self.viewport_rows = @max(@as(usize, 1), rows);
         try diff.update(cols);
         try diff.render(render_ctx.nc_ctx, sub_plane);
     } else {
@@ -217,6 +215,62 @@ pub fn update(self: *Self, ft: FrameTime) !Conclusion {
     }
 
     return .Noop;
+}
+
+fn moveFocusDown(self: *Self, diff: *Diff) bool {
+    if (self.focus_line + 1 >= diff.display_lines.items.len) return false;
+
+    const margin = @min(@as(usize, 5), self.viewport_rows -| 1);
+    const viewport_row = self.focus_line -| diff.top_line;
+    const bottom_margin_row = self.viewport_rows -| 1 -| margin;
+
+    self.focus_line += 1;
+    if (viewport_row >= bottom_margin_row and diff.top_line + self.viewport_rows < diff.display_lines.items.len) {
+        diff.top_line += 1;
+    }
+
+    return true;
+}
+
+fn moveFocusUp(self: *Self, diff: *Diff) bool {
+    if (self.focus_line == 0) return false;
+
+    const margin = @min(@as(usize, 5), self.viewport_rows -| 1);
+    const viewport_row = self.focus_line -| diff.top_line;
+
+    self.focus_line -= 1;
+    if (viewport_row <= margin and diff.top_line > 0) {
+        diff.top_line -= 1;
+    }
+
+    return true;
+}
+
+fn moveFocusPageUp(self: *Self, diff: *Diff) bool {
+    if (self.focus_line == 0) return false;
+
+    const viewport_row = self.focus_line -| diff.top_line;
+    self.focus_line -|= pageScrollAmount(self);
+    keepFocusAtViewportRow(self, diff, viewport_row);
+    return true;
+}
+
+fn moveFocusPageDown(self: *Self, diff: *Diff) bool {
+    if (self.focus_line + 1 >= diff.display_lines.items.len) return false;
+
+    const viewport_row = self.focus_line -| diff.top_line;
+    self.focus_line = @min(self.focus_line + pageScrollAmount(self), diff.display_lines.items.len - 1);
+    keepFocusAtViewportRow(self, diff, viewport_row);
+    return true;
+}
+
+fn pageScrollAmount(self: *const Self) usize {
+    return @max(@as(usize, 1), self.viewport_rows -| 2);
+}
+
+fn keepFocusAtViewportRow(self: *Self, diff: *Diff, viewport_row: usize) void {
+    const max_top = diff.display_lines.items.len -| self.viewport_rows;
+    diff.top_line = @min(self.focus_line -| viewport_row, max_top);
 }
 
 fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
@@ -269,13 +323,14 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         self.sub_plane = plane;
     }
 
+    const indicator_y: c_int = @intCast((self.focus_line -| if (self.diff) |diff| diff.top_line else 0) + 1);
     if (self.indicator_plane) |plane| {
         const main_plane = self.main_plane.?;
         const main_cols = c.ncplane_dim_x(main_plane);
         if (c.ncplane_resize_simple(plane, 1, @max(@as(c_uint, 1), main_cols -| 2)) < 0) {
             return error.ResizePlaneFailed;
         }
-        if (c.ncplane_move_yx(plane, @intCast(self.focus_line), 1) < 0) {
+        if (c.ncplane_move_yx(plane, indicator_y, 1) < 0) {
             return error.MovePlaneFailed;
         }
     } else {
@@ -283,9 +338,9 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         const main_cols = c.ncplane_dim_x(main_plane);
 
         var opts = std.mem.zeroes(c.ncplane_options);
-        opts.y = 1;
+        opts.y = indicator_y;
         opts.x = 1;
-        opts.rows = 2;
+        opts.rows = 1;
         opts.cols = @max(@as(c_uint, 1), main_cols -| 2);
         opts.name = "line_indicator_plane";
 
@@ -295,9 +350,9 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
 
     if (self.line_indicator == null) {
         self.line_indicator = try LineIndicator.init(render_ctx.nc_ctx, self.indicator_plane.?, .{
-            .y = 1,
+            .y = 0,
             .x = 0,
-            .height = 2,
+            .height = 1,
         });
     } else if (self.line_indicator) |*indicator| {
         try indicator.gif.move(0, 0);

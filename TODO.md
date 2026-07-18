@@ -1,5 +1,4 @@
 # TODO
-- [ ] Cursor (this would probably need to be a subcomponent within diff view)
 - [ ] Add line number
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
@@ -10,6 +9,7 @@
 - [ ] Proper starting args
 
 # DONE
+- [x] Cursor (this would probably need to be a subcomponent within diff view)
 - [x] Border and custom formatting
 - [x] Syntax highlight style application
 - [x] Fix coreLoop choosing either key handling _or_ tick (it should do both when applicable)
