@@ -53,6 +53,10 @@ pub fn initInterface(self: *Self) Component {
 
             .key_handler = struct {
                 pub fn handleInput(ptr: *anyopaque, event: InputEvent) !Conclusion {
+                    // We will only handle key down
+                    if (event.key == 0 or event.ncinput.evtype == c.NCTYPE_RELEASE)
+                        return .Noop;
+
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, handleInputEvent, .{ self_typed, event });
                 }
@@ -184,7 +188,6 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
 
     try drawBorder(main_plane);
 
-    // TODO: because we have multiple planes now we would need to understand which plane is dirty
     if (self.diff) |*diff| {
         var rows: c_uint = 0;
         var cols: c_uint = 0;

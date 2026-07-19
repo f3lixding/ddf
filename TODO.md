@@ -1,4 +1,5 @@
 # TODO
+- [ ] Fix double register for input
 - [ ] Add line number
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
@@ -7,6 +8,8 @@
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Streaming api for diff invocation
 - [ ] Proper starting args
+- [ ] Build for macos
+- [ ] Distribution
 
 # DONE
 - [x] Cursor (this would probably need to be a subcomponent within diff view)
