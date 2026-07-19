@@ -5,6 +5,7 @@ const SIZE_UPPER_BOUND: u64 = 52_428_000;
 var mutex: std.Io.Mutex = .init;
 var global_io: ?std.Io = null;
 var global_file: ?std.Io.File = null;
+var min_level: std.log.Level = .err;
 
 /// Initialize the process-wide std.log sink.
 /// Call this once, before spawning worker tasks that may log.
@@ -13,6 +14,13 @@ pub fn init(io: std.Io, path: []const u8) !void {
     defer mutex.unlock(io);
 
     if (global_file != null) return error.AlreadyInitialized;
+
+    if (std.c.getenv("DF_LOG")) |value| {
+        const converted: []const u8 = std.mem.span(value);
+        if (parseLevel(converted)) |level| {
+            min_level = level;
+        }
+    }
 
     const file = final: while (true) {
         const candidate = std.Io.Dir.openFileAbsolute(
@@ -65,6 +73,9 @@ pub fn logFn(
     comptime format: []const u8,
     args: anytype,
 ) void {
+    if (@intFromEnum(level) > @intFromEnum(min_level))
+        return;
+
     const io = global_io orelse return std.log.defaultLog(level, scope, format, args);
 
     mutex.lockUncancelable(io);
@@ -102,4 +113,12 @@ pub fn logFn(
     writer.print(format, args) catch return;
     writer.writeByte('\n') catch return;
     writer.flush() catch return;
+}
+
+fn parseLevel(value: []const u8) ?std.log.Level {
+    if (std.mem.eql(u8, value, "err")) return .err;
+    if (std.mem.eql(u8, value, "warn")) return .warn;
+    if (std.mem.eql(u8, value, "info")) return .info;
+    if (std.mem.eql(u8, value, "debug")) return .debug;
+    return null;
 }

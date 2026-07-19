@@ -35,7 +35,7 @@ pub fn init(nc_ctx: *c.notcurses, parent_plane: *c.ncplane, opts: Opts) !Self {
 
     const subpath = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ ASSET_PATH, opts.asset_name });
     const full_asset_path = try util.getDirRelativeToHomeSentinel(&full_path_buf, subpath);
-    std.log.err("full asset path: {s}", .{full_asset_path});
+    std.log.info("full asset path: {s}", .{full_asset_path});
 
     var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
     defer threaded.deinit();

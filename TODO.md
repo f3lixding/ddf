@@ -1,5 +1,6 @@
 # TODO
-- [ ] Add line number
+- [ ] Source log level from env var
+- [ ] Lazy source syntax highlight
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
@@ -12,6 +13,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Add line number
 - [x] Fix double register for input
 - [x] Cursor (this would probably need to be a subcomponent within diff view)
 - [x] Border and custom formatting
