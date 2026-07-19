@@ -4,6 +4,9 @@ const util = @import("../util.zig");
 const c = util.c;
 const treesitter = @import("../TreeSitter.zig");
 const ts = treesitter.ts;
+const Spsc = util.Spsc;
+const logging = std.log.scoped(.highlight);
+
 pub const Language = treesitter.Language;
 
 pub const HighlightSchema = struct {
@@ -67,6 +70,155 @@ pub const HighlightSpan = struct {
     start: usize,
     end: usize,
     kind: HighlightKind,
+};
+
+pub const Service = struct {
+    pub const Request = struct {
+        hunk_id: usize,
+        lang: Language,
+        buf: [][]const u8,
+
+        pub fn deinit(self: Request, alloc: std.mem.Allocator) void {
+            for (self.buf) |buf| {
+                alloc.free(buf);
+            }
+            alloc.free(self.buf);
+        }
+    };
+
+    /// User claims ownership
+    pub const Response = struct {
+        hunk_id: usize,
+        old_buf_highlight_spans: ?[]HighlightSpan,
+        new_buf_highlight_spans: ?[]HighlightSpan,
+    };
+
+    request_channel: Spsc(Request).Channel,
+    response_channel: Spsc(Response).Channel,
+
+    fut: ?std.Io.Future(anyerror!void) = null,
+
+    pub fn init(alloc: std.mem.Allocator) !Service {
+        const request_channel = try Spsc(Request).init(alloc, 256);
+        const response_channel = try Spsc(Response).init(alloc, 256);
+
+        return .{
+            .request_channel = request_channel,
+            .response_channel = response_channel,
+        };
+    }
+
+    pub fn deinit(self: *Service, io: std.Io) void {
+        if (self.fut) |*fut| {
+            fut.cancel(io) catch |err| {
+                switch (err) {
+                    error.Canceled => {},
+                    else => logging.err("Error cancelling highlight service loop: {any}", .{err}),
+                }
+            };
+        }
+
+        const alloc = self.request_channel.inner.alloc;
+
+        if (self.request_channel.rx.drain(alloc) catch null) |requests| {
+            for (requests) |req| req.deinit(alloc);
+            alloc.free(requests);
+        }
+
+        if (self.response_channel.rx.drain(alloc) catch null) |responses| {
+            for (responses) |resp| {
+                if (resp.old_buf_highlight_spans) |spans| alloc.free(spans);
+                if (resp.new_buf_highlight_spans) |spans| alloc.free(spans);
+            }
+            alloc.free(responses);
+        }
+
+        self.request_channel.deinit();
+        self.response_channel.deinit();
+    }
+
+    /// Drains all of the pending responses
+    pub fn checkPendingResponses(self: Service, alloc: std.mem.Allocator) !?[]Response {
+        return try self.response_channel.rx.drain(alloc);
+    }
+
+    pub fn sendRequest(self: Service, io: std.Io, req: Request) !void {
+        try self.request_channel.tx.trySend(io, req);
+    }
+
+    pub fn startAndForget(self: *Service, alloc: std.mem.Allocator, io: std.Io) !void {
+        const fut = try io.concurrent(coreLoop, .{ alloc, io, &self.request_channel, &self.response_channel });
+        self.fut = fut;
+    }
+
+    /// Core loop of the service.
+    /// During the process of a request, it assumes the hunk buf supplied
+    /// should live for the entire duration of the request process
+    /// For that reason, the loop will claim ownership of this buffer (and free
+    /// it)
+    ///
+    /// It does rely on the Spsc from util to operate. Currently at the time of
+    /// writing there is no backpressure control and the behavior is that as
+    /// soon as the underlying ring buffer is full new incoming requests are
+    /// dropped
+    ///
+    /// TODO: either add a retry or add an unbounded version of Spsc
+    fn coreLoop(
+        alloc: std.mem.Allocator,
+        io: std.Io,
+        req_channel: *const Spsc(Request).Channel,
+        resp_channel: *const Spsc(Response).Channel,
+    ) anyerror!void {
+        const req_rx = req_channel.rx;
+        const resp_tx = resp_channel.tx;
+
+        while (true) {
+            try io.checkCancel();
+
+            const req = try req_rx.recv(io);
+            defer req.deinit(alloc);
+
+            var old_buf: std.ArrayList(u8) = .empty;
+            defer old_buf.deinit(alloc);
+            var new_buf: std.ArrayList(u8) = .empty;
+            defer new_buf.deinit(alloc);
+
+            for (req.buf) |content| {
+                if (content.len == 0) continue;
+
+                switch (content[0]) {
+                    ' ' => {
+                        try old_buf.appendSlice(alloc, content[1..]);
+                        try old_buf.append(alloc, '\n');
+                        try new_buf.appendSlice(alloc, content[1..]);
+                        try new_buf.append(alloc, '\n');
+                    },
+                    '-' => {
+                        try old_buf.appendSlice(alloc, content[1..]);
+                        try old_buf.append(alloc, '\n');
+                    },
+                    '+' => {
+                        try new_buf.appendSlice(alloc, content[1..]);
+                        try new_buf.append(alloc, '\n');
+                    },
+                    else => {},
+                }
+            }
+
+            const old_buf_hl_spans = try highlight(alloc, req.lang, old_buf.items);
+            const new_buf_hl_spans = try highlight(alloc, req.lang, new_buf.items);
+
+            resp_tx.trySend(io, .{
+                .hunk_id = req.hunk_id,
+                .old_buf_highlight_spans = old_buf_hl_spans,
+                .new_buf_highlight_spans = new_buf_hl_spans,
+            }) catch |err| {
+                alloc.free(old_buf_hl_spans);
+                alloc.free(new_buf_hl_spans);
+                logging.err("dropping highlight response: {any}", .{err});
+            };
+        }
+    }
 };
 
 /// This function roughly does the following (I am writing it here just so I

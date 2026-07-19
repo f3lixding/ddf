@@ -98,6 +98,37 @@ pub fn Spsc(
 
                 return res;
             }
+
+            /// Caller owns the return slice
+            /// It is possible that new items could have been written into the
+            /// underlying ring buffer during drain. This function makes no
+            /// guarantee that the ring buffer would be empty by the end of
+            /// this function
+            pub fn drain(self: @This(), alloc: std.mem.Allocator) !?[]T {
+                const inner = self.inner;
+
+                const head = inner.head.load(.monotonic);
+                const tail = inner.tail.load(.acquire);
+
+                if (head == tail)
+                    return null;
+
+                var res: std.ArrayList(T) = .empty;
+                errdefer res.deinit(alloc);
+
+                var pointer = head;
+                const cap = inner.buf.len;
+
+                while (pointer != tail) {
+                    const slot = pointer % cap;
+                    try res.append(alloc, inner.buf[slot]);
+                    pointer +%= 1;
+                }
+
+                inner.head.store(tail, .release);
+
+                return try res.toOwnedSlice(alloc);
+            }
         };
 
         pub const Channel = struct {

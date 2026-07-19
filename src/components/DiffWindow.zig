@@ -112,7 +112,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
     const maybe_diff: ?Diff = if (run_result.stdout.len == 0)
         null
     else
-        try Diff.init(alloc, run_result.stdout, 80);
+        try Diff.init(alloc, io, run_result.stdout, 80);
     const parse_ns = nowNs() - parse_start_ns;
 
     log.info("DiffWindow.init profile: total_ms={d:.3} command_ms={d:.3} diff_init_ms={d:.3}", .{
@@ -210,7 +210,7 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         var cols: c_uint = 0;
         c.ncplane_dim_yx(sub_plane, &rows, &cols);
         self.viewport_rows = @max(@as(usize, 1), rows);
-        try diff.update(cols);
+        _ = try diff.update(cols);
         try diff.render(render_ctx.nc_ctx, sub_plane);
     } else {
         c.ncplane_erase(sub_plane);
@@ -230,6 +230,12 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
 }
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {
+    if (self.diff) |*diff| {
+        if (try diff.update(diff.width)) {
+            self.dirty = true;
+        }
+    }
+
     if (self.line_indicator) |*indicator| {
         return try indicator.update(ft);
     }

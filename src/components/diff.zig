@@ -7,6 +7,7 @@ const highlight = @import("syntax_highlighter.zig");
 const HighlightSchema = highlight.HighlightSchema;
 const HighlightSpan = highlight.HighlightSpan;
 const Language = highlight.Language;
+const HighlightService = highlight.Service;
 
 const startsWith = std.mem.startsWith;
 
@@ -33,12 +34,15 @@ pub const Diff = struct {
     highlight_schema: HighlightSchema = default_schema,
     focus_line: usize = 0,
     line_number_width: c_uint,
+    highlighter: HighlightService,
+    io: std.Io,
 
     /// The caller needs to ensure the input stays intact until deinit is
     /// called. The construction of Diff as well as its children makes no
     /// attempt to copy the underlying slices
     pub fn init(
         alloc: std.mem.Allocator,
+        io: std.Io,
         input: []const u8,
         width: c_uint,
     ) !Diff {
@@ -51,6 +55,10 @@ pub const Diff = struct {
         var hunk_count: usize = 0;
         var input_line_count: usize = 0;
         var display_line_count: usize = 0;
+
+        var highlighter = try HighlightService.init(alloc);
+        errdefer highlighter.deinit(io);
+        try highlighter.startAndForget(alloc, io);
 
         var lines = std.mem.splitScalar(u8, input, '\n');
         var files: std.ArrayList(FileDiff) = .empty;
@@ -120,40 +128,10 @@ pub const Diff = struct {
                     input_line_count += 1;
                 }
 
-                var old_buf_hl_spans: ?[]HighlightSpan = null;
-                var new_buf_hl_spans: ?[]HighlightSpan = null;
-
+                const hunk_id = hunk_count;
                 const highlight_start_ns = nowNs();
                 if (language) |lang| {
-                    var old_buf: std.ArrayList(u8) = .empty;
-                    defer old_buf.deinit(alloc);
-                    var new_buf: std.ArrayList(u8) = .empty;
-                    defer new_buf.deinit(alloc);
-
-                    for (hunk_buf.items) |content| {
-                        if (content.len == 0) continue;
-
-                        switch (content[0]) {
-                            ' ' => {
-                                try old_buf.appendSlice(alloc, content[1..]);
-                                try old_buf.append(alloc, '\n');
-                                try new_buf.appendSlice(alloc, content[1..]);
-                                try new_buf.append(alloc, '\n');
-                            },
-                            '-' => {
-                                try old_buf.appendSlice(alloc, content[1..]);
-                                try old_buf.append(alloc, '\n');
-                            },
-                            '+' => {
-                                try new_buf.appendSlice(alloc, content[1..]);
-                                try new_buf.append(alloc, '\n');
-                            },
-                            else => {},
-                        }
-                    }
-
-                    old_buf_hl_spans = try highlight.highlight(alloc, lang, old_buf.items);
-                    new_buf_hl_spans = try highlight.highlight(alloc, lang, new_buf.items);
+                    try enqueueHighlightRequest(alloc, io, &highlighter, hunk_id, lang, hunk_buf.items);
                 }
                 highlight_ns += nowNs() - highlight_start_ns;
 
@@ -162,11 +140,9 @@ pub const Diff = struct {
                 defer alloc.free(hunk_lines);
 
                 var hunk = try parseHunk(alloc, hunk_header, hunk_lines);
+                hunk.id = hunk_id;
                 parse_hunk_ns += nowNs() - parse_hunk_start_ns;
                 max_line_num = @max(max_line_num, hunk.maxLine());
-
-                hunk.new_buf_hl_spans = new_buf_hl_spans;
-                hunk.old_buf_hl_spans = old_buf_hl_spans;
 
                 try hunks.append(alloc, hunk);
             }
@@ -218,6 +194,8 @@ pub const Diff = struct {
             .did_wrap = gather_result.did_wrap,
             .alloc = alloc,
             .line_number_width = line_number_width,
+            .highlighter = highlighter,
+            .io = io,
         };
     }
 
@@ -240,14 +218,18 @@ pub const Diff = struct {
         }
     }
 
-    pub fn update(self: *Diff, width: c_uint) !void {
-        if (self.width == width) return;
-        if (self.width < width) {
-            self.width = width;
-            if (!self.did_wrap) return;
-        } else if (!self.did_wrap and self.widest < width) {
-            self.width = width;
-            return;
+    pub fn update(self: *Diff, width: c_uint) !bool {
+        const needs_regather = try self.applyPendingHighlightResponses();
+
+        if (self.width == width and !needs_regather) return false;
+        if (!needs_regather) {
+            if (self.width < width) {
+                self.width = width;
+                if (!self.did_wrap) return false;
+            } else if (!self.did_wrap and self.widest < width) {
+                self.width = width;
+                return false;
+            }
         }
 
         self.display_lines.clearRetainingCapacity();
@@ -262,9 +244,50 @@ pub const Diff = struct {
         self.width = width;
         self.widest = gather_result.widest +| self.line_number_width +| 2;
         self.did_wrap = gather_result.did_wrap;
+        return true;
+    }
+
+    fn applyPendingHighlightResponses(self: *Diff) !bool {
+        const responses = try self.highlighter.checkPendingResponses(self.alloc) orelse return false;
+        defer self.alloc.free(responses);
+
+        var changed = false;
+        for (responses) |resp| {
+            if (self.findHunk(resp.hunk_id)) |hunk| {
+                if (hunk.old_buf_hl_spans) |spans| self.alloc.free(spans);
+                if (hunk.new_buf_hl_spans) |spans| self.alloc.free(spans);
+                hunk.old_buf_hl_spans = resp.old_buf_highlight_spans;
+                hunk.new_buf_hl_spans = resp.new_buf_highlight_spans;
+                changed = true;
+            } else {
+                if (resp.old_buf_highlight_spans) |spans| self.alloc.free(spans);
+                if (resp.new_buf_highlight_spans) |spans| self.alloc.free(spans);
+                log.warn("dropping highlight response for unknown hunk id {d}", .{resp.hunk_id});
+            }
+        }
+
+        return changed;
+    }
+
+    fn findHunk(self: *Diff, hunk_id: usize) ?*Hunk {
+        for (self.files) |*file| {
+            for (file.hunks) |*hunk| {
+                if (hunk.id == hunk_id) return hunk;
+            }
+        }
+        return null;
     }
 
     pub fn deinit(self: *Diff, alloc: std.mem.Allocator) void {
+        if (self.highlighter.checkPendingResponses(alloc) catch null) |responses| {
+            for (responses) |resp| {
+                if (resp.old_buf_highlight_spans) |spans| alloc.free(spans);
+                if (resp.new_buf_highlight_spans) |spans| alloc.free(spans);
+            }
+            alloc.free(responses);
+        }
+        self.highlighter.deinit(self.io);
+
         for (self.files) |file| {
             file.deinit(alloc);
         }
@@ -272,6 +295,39 @@ pub const Diff = struct {
         self.display_lines.deinit(alloc);
     }
 };
+
+fn enqueueHighlightRequest(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    highlighter: *HighlightService,
+    hunk_id: usize,
+    lang: Language,
+    lines: []const []const u8,
+) !void {
+    var owned_lines = try alloc.alloc([]const u8, lines.len);
+    var owned_count: usize = 0;
+    errdefer {
+        for (owned_lines[0..owned_count]) |line| alloc.free(line);
+        alloc.free(owned_lines);
+    }
+
+    for (lines) |line| {
+        owned_lines[owned_count] = try alloc.dupe(u8, line);
+        owned_count += 1;
+    }
+
+    highlighter.sendRequest(io, .{
+        .hunk_id = hunk_id,
+        .lang = lang,
+        .buf = owned_lines,
+    }) catch |err| switch (err) {
+        error.ChannelFull, error.ChannelClosed => {
+            for (owned_lines) |line| alloc.free(line);
+            alloc.free(owned_lines);
+            log.warn("dropping highlight request for hunk {d}: {any}", .{ hunk_id, err });
+        },
+    };
+}
 
 fn nowNs() i128 {
     var ts: c.timespec = undefined;
@@ -342,6 +398,7 @@ pub const FileDiff = struct {
 };
 
 pub const Hunk = struct {
+    id: usize = 0,
     header: []const u8,
     old_start: usize = 0,
     old_len: usize = 0,
@@ -1065,7 +1122,7 @@ pub fn main(init: std.process.Init) !void {
         return error.RefreshFailed;
     }
 
-    var diff = try Diff.init(alloc, input, cols);
+    var diff = try Diff.init(alloc, init.io, input, cols);
     defer diff.deinit(alloc);
 
     const plane = c.notcurses_stdplane(nc_ctx) orelse return error.CreatePlaneFailed;
@@ -1173,7 +1230,7 @@ test "Diff.init tracks widest display line after wrapping" {
     ;
 
     const alloc = std.testing.allocator;
-    var diff = try Diff.init(alloc, input, 10);
+    var diff = try Diff.init(alloc, std.testing.io, input, 10);
     defer diff.deinit(alloc);
 
     try std.testing.expectEqual(@as(c_uint, 10), diff.widest);
@@ -1194,7 +1251,7 @@ test "Diff.init parses a single file diff" {
     ;
 
     const alloc = std.testing.allocator;
-    var diff = try Diff.init(alloc, input, 80);
+    var diff = try Diff.init(alloc, std.testing.io, input, 80);
     defer diff.deinit(alloc);
 
     try std.testing.expect(!diff.did_wrap);

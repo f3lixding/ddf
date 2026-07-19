@@ -1,5 +1,4 @@
 # TODO
-- [ ] Source log level from env var
 - [ ] Lazy source syntax highlight
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
@@ -13,6 +12,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Source log level from env var
 - [x] Add line number
 - [x] Fix double register for input
 - [x] Cursor (this would probably need to be a subcomponent within diff view)
