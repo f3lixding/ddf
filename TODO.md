@@ -1,8 +1,8 @@
 # TODO
-- [ ] Fix double register for input
 - [ ] Add line number
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
+- [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] File picker (but only for files changed)
 - [ ] Refine grapheme width estimation with real notcurses api
@@ -12,6 +12,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Fix double register for input
 - [x] Cursor (this would probably need to be a subcomponent within diff view)
 - [x] Border and custom formatting
 - [x] Syntax highlight style application

@@ -355,7 +355,7 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         self.line_indicator = try LineIndicator.init(render_ctx.nc_ctx, self.indicator_plane.?, .{
             .y = 0,
             .x = 0,
-            .height = 1,
+            .height = 2,
         });
     } else if (self.line_indicator) |*indicator| {
         try indicator.gif.move(0, 0);
