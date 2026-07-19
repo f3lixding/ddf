@@ -57,6 +57,8 @@ const Opts = struct {
         }
 
         var opts = std.mem.zeroes(c.notcurses_options);
+        opts.flags |= c.NCOPTION_SUPPRESS_BANNERS;
+
         const nc_ctx = c.notcurses_init(&opts, null) orelse {
             return error.NotcursesInitFailed;
         };

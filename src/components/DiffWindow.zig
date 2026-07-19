@@ -87,10 +87,19 @@ pub fn initInterface(self: *Self) Component {
 }
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
+    const log = std.log.scoped(.diff_window);
+    const init_start_ns = nowNs();
+    const command_start_ns = nowNs();
     const run_result = try std.process.run(alloc, io, .{
         .argv = DIFF_ARGV,
         .stdout_limit = .limited(16 * 1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
+    });
+    const command_ns = nowNs() - command_start_ns;
+    log.info("diff command completed: stdout_bytes={d} stderr_bytes={d} elapsed_ms={d:.3}", .{
+        run_result.stdout.len,
+        run_result.stderr.len,
+        nsToMs(command_ns),
     });
     errdefer alloc.free(run_result.stdout);
     errdefer alloc.free(run_result.stderr);
@@ -99,10 +108,18 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
         return error.DiffCommandFailed;
     }
 
+    const parse_start_ns = nowNs();
     const maybe_diff: ?Diff = if (run_result.stdout.len == 0)
         null
     else
         try Diff.init(alloc, run_result.stdout, 80);
+    const parse_ns = nowNs() - parse_start_ns;
+
+    log.info("DiffWindow.init profile: total_ms={d:.3} command_ms={d:.3} diff_init_ms={d:.3}", .{
+        nsToMs(nowNs() - init_start_ns),
+        nsToMs(command_ns),
+        nsToMs(parse_ns),
+    });
 
     return .{
         .alloc = alloc,
@@ -218,6 +235,16 @@ pub fn update(self: *Self, ft: FrameTime) !Conclusion {
     }
 
     return .Noop;
+}
+
+fn nowNs() i128 {
+    var ts: c.timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (@as(i128, ts.tv_sec) * std.time.ns_per_s) + @as(i128, ts.tv_nsec);
+}
+
+fn nsToMs(ns: i128) f64 {
+    return @as(f64, @floatFromInt(ns)) / @as(f64, std.time.ns_per_ms);
 }
 
 fn moveFocusDown(self: *Self, diff: *Diff) bool {
