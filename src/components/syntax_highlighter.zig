@@ -112,10 +112,11 @@ pub const Service = struct {
         if (self.fut) |*fut| {
             fut.cancel(io) catch |err| {
                 switch (err) {
-                    error.Canceled => {},
+                    error.Canceled, error.Timeout => {},
                     else => logging.err("Error cancelling highlight service loop: {any}", .{err}),
                 }
             };
+            self.fut = null;
         }
 
         const alloc = self.request_channel.inner.alloc;

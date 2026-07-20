@@ -1,5 +1,4 @@
 # TODO
-- [ ] Lazy source syntax highlight
 - [ ] Refine arg sets 
 - [ ] Put file and lines deleted / added on top line of border
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
@@ -12,6 +11,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Lazy source syntax highlight
 - [x] Source log level from env var
 - [x] Add line number
 - [x] Fix double register for input

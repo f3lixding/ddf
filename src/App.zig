@@ -252,7 +252,10 @@ test "handleInputEvent mounts and dismounts components" {
 
     var keep_state: TestComponent = .{ .result = .Noop };
     var dismount_state: TestComponent = .{ .result = .Dismount };
-    var mounting_state: TestComponent = .{ .result = .{ .Mount = mounted_component } };
+    var mounting_state: TestComponent = .{ .result = .{ .Mount = .{
+        .component = mounted_component,
+        .hide = false,
+    } } };
 
     try app.components.append(alloc, keep_state.component());
     try app.components.append(alloc, dismount_state.component());
@@ -266,7 +269,9 @@ test "handleInputEvent mounts and dismounts components" {
 
     try app.handleInputEvent(@ptrFromInt(1), input_event);
 
-    try std.testing.expectEqual(@as(usize, 1), keep_state.handled_count);
+    // Handling stops after a component dismounts, so lower components do not
+    // handle the same input event after stack shape changes.
+    try std.testing.expectEqual(@as(usize, 0), keep_state.handled_count);
     try std.testing.expectEqual(@as(usize, 1), dismount_state.handled_count);
     try std.testing.expectEqual(@as(usize, 1), mounting_state.handled_count);
     try std.testing.expectEqual(@as(usize, 0), mounted_state.handled_count);
