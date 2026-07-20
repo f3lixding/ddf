@@ -198,20 +198,38 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
+    const log = std.log.scoped(.diff_window);
+    const render_start_ns = nowNs();
+
+    const ensure_start_ns = nowNs();
     const planes = try self.ensurePlane(render_ctx);
+    const ensure_ns = nowNs() - ensure_start_ns;
+
     const main_plane = planes.main_plane;
     const sub_plane = planes.sub_plane;
     const indicator_plane = planes.line_indicator_plane;
 
+    const border_start_ns = nowNs();
     try drawBorder(main_plane);
+    const border_ns = nowNs() - border_start_ns;
+
+    var diff_update_ns: i128 = 0;
+    var diff_render_ns: i128 = 0;
+    var indicator_render_ns: i128 = 0;
 
     if (self.diff) |*diff| {
         var rows: c_uint = 0;
         var cols: c_uint = 0;
         c.ncplane_dim_yx(sub_plane, &rows, &cols);
         self.viewport_rows = @max(@as(usize, 1), rows);
+
+        const diff_update_start_ns = nowNs();
         _ = try diff.update(cols);
+        diff_update_ns = nowNs() - diff_update_start_ns;
+
+        const diff_render_start_ns = nowNs();
         try diff.render(render_ctx.nc_ctx, sub_plane);
+        diff_render_ns = nowNs() - diff_render_start_ns;
     } else {
         c.ncplane_erase(sub_plane);
         const msg = "No diff to display";
@@ -220,13 +238,24 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         }
     }
 
+    const indicator_render_start_ns = nowNs();
     if (self.line_indicator) |*indicator| {
         try indicator.render(render_ctx.nc_ctx);
     } else {
         c.ncplane_erase(indicator_plane);
     }
+    indicator_render_ns = nowNs() - indicator_render_start_ns;
 
     self.dirty = false;
+
+    log.debug("DiffWindow.render profile: total_ms={d:.3} ensure_ms={d:.3} border_ms={d:.3} diff_update_ms={d:.3} diff_render_ms={d:.3} indicator_ms={d:.3}", .{
+        nsToMs(nowNs() - render_start_ns),
+        nsToMs(ensure_ns),
+        nsToMs(border_ns),
+        nsToMs(diff_update_ns),
+        nsToMs(diff_render_ns),
+        nsToMs(indicator_render_ns),
+    });
 }
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {

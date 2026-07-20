@@ -4,13 +4,13 @@
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] File picker (but only for files changed)
+- [ ] Comments
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Streaming api for diff invocation
-- [ ] Proper starting args
-- [ ] Build for macos
 - [ ] Distribution
 
 # DONE
+- [x] Build for macos
 - [x] Lazy source syntax highlight
 - [x] Source log level from env var
 - [x] Add line number

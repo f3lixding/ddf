@@ -167,16 +167,43 @@ fn tick(self: *Self, frame_time: FrameTime) !void {
 }
 
 fn render(self: *const Self, nc_ctx: *c.notcurses) !void {
+    const log = std.log.scoped(.app);
+    const render_start_ns = nowNs();
+
     var needs_to_call_render = false;
+    var component_render_ns: i128 = 0;
     for (self.components.items) |*comp| {
-        needs_to_call_render = (try comp.render(&self.render_ctx)) or needs_to_call_render;
+        const comp_start_ns = nowNs();
+        const rendered = try comp.render(&self.render_ctx);
+        component_render_ns += nowNs() - comp_start_ns;
+        needs_to_call_render = rendered or needs_to_call_render;
     }
 
+    var nc_render_ns: i128 = 0;
     if (needs_to_call_render) {
+        const nc_render_start_ns = nowNs();
         if (c.notcurses_render(nc_ctx) < 0) {
             return error.RenderFailed;
         }
+        nc_render_ns = nowNs() - nc_render_start_ns;
     }
+
+    log.debug("App.render profile: total_ms={d:.3} component_ms={d:.3} notcurses_render_ms={d:.3} did_render={any}", .{
+        nsToMs(nowNs() - render_start_ns),
+        nsToMs(component_render_ns),
+        nsToMs(nc_render_ns),
+        needs_to_call_render,
+    });
+}
+
+fn nowNs() i128 {
+    var ts: c.timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (@as(i128, ts.tv_sec) * std.time.ns_per_s) + @as(i128, ts.tv_nsec);
+}
+
+fn nsToMs(ns: i128) f64 {
+    return @as(f64, @floatFromInt(ns)) / @as(f64, std.time.ns_per_ms);
 }
 
 fn loopTime(self: Self) i64 {
