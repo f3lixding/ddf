@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const bin_name = b.option([]const u8, "bin-name", "bin name") orelse "df";
+    const bin_name = b.option([]const u8, "bin-name", "bin name") orelse "ddf";
     const rpaths = b.option([]const u8, "rpath", "rpath to add");
     const interpreter = b.option([]const u8, "interpreter", "ELF interpreter to set with patchelf");
     const patchelf = b.option([]const u8, "patchelf", "patchelf executable") orelse "patchelf";

@@ -1,5 +1,5 @@
 {
-  description = "flake for df";
+  description = "flake for ddf";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -59,12 +59,12 @@
         ]
         ++ treeSitterDeps;
 
-        binName = "df";
+        binName = "ddf";
       in
       {
         packages = {
           default = pkgs.stdenv.mkDerivation {
-            pname = "df";
+            pname = "ddf";
             version = "0.1.0";
 
             src = ./.;
