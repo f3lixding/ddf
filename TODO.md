@@ -1,16 +1,16 @@
 # TODO
-- [ ] Customized render for file / hunk metadata
-- [ ] Patch notcurses for tmux on macos build
 - [ ] Refine arg sets 
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] File picker (but only for files changed)
+- [ ] Customized render for file / hunk metadata
 - [ ] Comments
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Streaming api for diff invocation
 - [ ] Distribution
 
 # DONE
+- [x] Patch notcurses for tmux on macos build
 - [x] Put file and lines deleted / added on top line of border
 - [x] Build for macos
 - [x] Lazy source syntax highlight
