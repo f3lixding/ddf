@@ -32,7 +32,6 @@ pub const Diff = struct {
     did_wrap: bool,
     alloc: std.mem.Allocator,
     highlight_schema: HighlightSchema = default_schema,
-    focus_line: usize = 0,
     line_number_width: c_uint,
     highlighter: HighlightService,
     io: std.Io,
@@ -139,7 +138,7 @@ pub const Diff = struct {
                 const hunk_lines = try hunk_buf.toOwnedSlice(alloc);
                 defer alloc.free(hunk_lines);
 
-                var hunk = try parseHunk(alloc, hunk_header, hunk_lines);
+                var hunk = try parseHunk(alloc, hunks.items.len, hunk_header, hunk_lines);
                 hunk.id = hunk_id;
                 parse_hunk_ns += nowNs() - parse_hunk_start_ns;
                 max_line_num = @max(max_line_num, hunk.maxLine());
@@ -278,6 +277,20 @@ pub const Diff = struct {
         return null;
     }
 
+    pub fn fileNameForDisplayLine(self: *const Diff, index: usize) ?[]const u8 {
+        if (index >= self.display_lines.items.len) return null;
+        return self.display_lines.items[index].file_path;
+    }
+
+    pub fn findFileFromHunkId(self: *const Diff, hunk_id: usize) ?*FileDiff {
+        for (self.files) |*file| {
+            for (file.hunks) |*hunk| {
+                if (hunk.id == hunk_id) return file;
+            }
+        }
+        return null;
+    }
+
     pub fn deinit(self: *Diff, alloc: std.mem.Allocator) void {
         if (self.highlighter.checkPendingResponses(alloc) catch null) |responses| {
             for (responses) |resp| {
@@ -386,11 +399,12 @@ pub const FileDiff = struct {
                 null,
                 null,
                 null,
+                self.new_path,
             ));
         }
 
         for (self.hunks) |hunk| {
-            result.merge(try hunk.gatherDisplayLines(alloc, buf, diff_line_width, number_segment_width));
+            result.merge(try hunk.gatherDisplayLines(alloc, buf, diff_line_width, number_segment_width, self.new_path));
         }
 
         return result;
@@ -424,6 +438,7 @@ pub const Hunk = struct {
         buf: *std.ArrayList(DisplayLine),
         diff_line_width: c_uint,
         number_segment_width: c_uint,
+        file_path: []const u8,
     ) !GatherResult {
         var result: GatherResult = .{};
 
@@ -439,6 +454,7 @@ pub const Hunk = struct {
             null,
             null,
             null,
+            file_path,
         ));
 
         var old_buf_offset: usize = 0;
@@ -454,6 +470,7 @@ pub const Hunk = struct {
                 &new_buf_offset,
                 self.old_buf_hl_spans,
                 self.new_buf_hl_spans,
+                file_path,
             ));
         }
 
@@ -470,6 +487,7 @@ pub const Hunk = struct {
 
 pub const DiffLine = union(enum) {
     pub const Inner = struct {
+        associated_hunk_id: usize = 0,
         content: []const u8,
         line_number: usize = 0,
     };
@@ -488,6 +506,7 @@ pub const DiffLine = union(enum) {
         new_buf_offset: *usize,
         old_buf_hl_spans: ?[]HighlightSpan,
         new_buf_hl_spans: ?[]HighlightSpan,
+        file_path: []const u8,
     ) !GatherResult {
         const line = self.intoDisplayLine(number_segment_width);
 
@@ -503,6 +522,7 @@ pub const DiffLine = union(enum) {
             new_buf_offset,
             old_buf_hl_spans,
             new_buf_hl_spans,
+            file_path,
         );
     }
 
@@ -546,6 +566,8 @@ const DisplayLine = struct {
     kind: Kind,
     text: []const u8,
     line_number: ?LineNumber = null,
+    hunk_id: usize = 0,
+    file_path: ?[]const u8 = null,
 
     /// This denotes the offset of beginning of the DisplayLine from the
     /// beginning of the hunk
@@ -814,6 +836,7 @@ fn gatherTextDisplayLines(
     new_buf_offset: ?*usize,
     old_buf_hl_spans: ?[]HighlightSpan,
     new_buf_hl_spans: ?[]HighlightSpan,
+    file_path: ?[]const u8,
 ) !GatherResult {
     var remaining = text;
     var result: GatherResult = .{};
@@ -837,6 +860,7 @@ fn gatherTextDisplayLines(
                 } else 0,
                 .old_buf_hl_spans = old_buf_hl_spans,
                 .new_buf_hl_spans = new_buf_hl_spans,
+                .file_path = file_path,
             });
 
             if (old_buf_offset != null and new_buf_offset != null) {
@@ -872,6 +896,7 @@ fn gatherTextDisplayLines(
             } else 0,
             .old_buf_hl_spans = old_buf_hl_spans,
             .new_buf_hl_spans = new_buf_hl_spans,
+            .file_path = file_path,
         });
 
         if (old_buf_offset != null and new_buf_offset != null) {
@@ -946,7 +971,7 @@ fn parseHunkHeader(header: []const u8) !HunkHeader {
 }
 
 /// Does NOT copy
-fn parseHunk(alloc: std.mem.Allocator, header: []const u8, inputs: [][]const u8) !Hunk {
+fn parseHunk(alloc: std.mem.Allocator, hunk_id: usize, header: []const u8, inputs: [][]const u8) !Hunk {
     const parsed_header = try parseHunkHeader(header);
 
     var lines: std.ArrayList(DiffLine) = .empty;
@@ -959,14 +984,26 @@ fn parseHunk(alloc: std.mem.Allocator, header: []const u8, inputs: [][]const u8)
         var line: DiffLine = undefined;
 
         if (startsWith(u8, input, " ")) {
-            line = .{ .context = .{ .content = input, .line_number = old_line } };
+            line = .{ .context = .{
+                .content = input,
+                .line_number = old_line,
+                .associated_hunk_id = hunk_id,
+            } };
             old_line += 1;
             new_line += 1;
         } else if (startsWith(u8, input, "-")) {
-            line = .{ .remove = .{ .content = input, .line_number = old_line } };
+            line = .{ .remove = .{
+                .content = input,
+                .line_number = old_line,
+                .associated_hunk_id = hunk_id,
+            } };
             old_line += 1;
         } else if (startsWith(u8, input, "+")) {
-            line = .{ .add = .{ .content = input, .line_number = new_line } };
+            line = .{ .add = .{
+                .content = input,
+                .line_number = new_line,
+                .associated_hunk_id = hunk_id,
+            } };
             new_line += 1;
         } else {
             log.err("Unknown line encountered. Skipping", .{});
@@ -1283,7 +1320,7 @@ test "hunk display lines track old and new source offsets" {
     var display_lines: std.ArrayList(DisplayLine) = .empty;
     defer display_lines.deinit(alloc);
 
-    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 80, 1);
+    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 80, 1, "src/test.zig");
 
     // 0 is the hunk header. The rest are the hunk body lines.
     try std.testing.expectEqual(@as(usize, 5), display_lines.items.len);
@@ -1320,7 +1357,7 @@ test "wrapped hunk display lines track offsets within stripped source" {
     var display_lines: std.ArrayList(DisplayLine) = .empty;
     defer display_lines.deinit(alloc);
 
-    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 4, 1);
+    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 4, 1, "src/test.zig");
 
     const Find = struct {
         fn line(items: []const DisplayLine, kind: DisplayLine.Kind, text: []const u8) !DisplayLine {

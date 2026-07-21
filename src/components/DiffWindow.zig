@@ -16,7 +16,6 @@ const LineIndicator = @import("LineIndicator.zig");
 
 const Self = @This();
 
-const DIFF_COMMAND: []const u8 = "jj diff --tool=:git --color never";
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
 
 alloc: std.mem.Allocator,
@@ -210,7 +209,11 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     const indicator_plane = planes.line_indicator_plane;
 
     const border_start_ns = nowNs();
-    try drawBorder(main_plane);
+    const active_file_name = if (self.diff) |*diff|
+        diff.fileNameForDisplayLine(self.focus_line)
+    else
+        null;
+    try drawBorder(main_plane, active_file_name);
     const border_ns = nowNs() - border_start_ns;
 
     var diff_update_ns: i128 = 0;
@@ -430,7 +433,7 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     };
 }
 
-fn drawBorder(plane: *c.ncplane) !void {
+fn drawBorder(plane: *c.ncplane, active_file_name: ?[]const u8) !void {
     c.ncplane_erase(plane);
 
     var rows: c_uint = 0;
@@ -461,11 +464,32 @@ fn drawBorder(plane: *c.ncplane) !void {
         try putBorderSegment(plane, last_y, x, "━");
     }
 
+    if (active_file_name) |file_name| {
+        try drawBorderTitle(plane, cols, file_name);
+    }
+
     var y: c_int = 1;
     while (y < last_y) : (y += 1) {
         try putBorderSegment(plane, y, 0, "┃");
         try putBorderSegment(plane, y, last_x, "┃");
     }
+}
+
+fn drawBorderTitle(plane: *c.ncplane, cols: c_uint, file_name: []const u8) !void {
+    if (cols <= 6 or file_name.len == 0) return;
+
+    const max_name_len: usize = @intCast(cols - 6);
+    const visible_name = if (file_name.len > max_name_len)
+        file_name[file_name.len - max_name_len ..]
+    else
+        file_name;
+
+    var x: c_int = 2;
+    try putBorderSegment(plane, 0, x, " ");
+    x += 1;
+    try putBorderSegment(plane, 0, x, visible_name);
+    x += @intCast(visible_name.len);
+    try putBorderSegment(plane, 0, x, " ");
 }
 
 fn putBorderSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !void {

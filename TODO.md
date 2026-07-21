@@ -1,7 +1,7 @@
 # TODO
-- [ ] Refine arg sets 
-- [ ] Put file and lines deleted / added on top line of border
+- [ ] Customized render for file / hunk metadata
 - [ ] Patch notcurses for tmux on macos build
+- [ ] Refine arg sets 
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention)
 - [ ] File picker (but only for files changed)
@@ -11,6 +11,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Put file and lines deleted / added on top line of border
 - [x] Build for macos
 - [x] Lazy source syntax highlight
 - [x] Source log level from env var
