@@ -94,7 +94,7 @@ pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args;
 
     const io = init.io;
-    try logging.init(io, "/tmp/df.log");
+    try logging.init(io, "/tmp/ddf.log");
     defer logging.deinit(io);
 
     std.log.info("started", .{});

@@ -545,6 +545,9 @@ pub const DiffLine = union(enum) {
 };
 
 /// An alternate representation of parsed content optmized for rendering
+/// The layout of this is kind of messed up but I am too lazy to change it now.
+/// We are going to have to just stick this out and bear with this ghetto union
+/// all fields, relevant or not
 const DisplayLine = struct {
     const Kind = enum {
         file_header,
@@ -568,6 +571,7 @@ const DisplayLine = struct {
     line_number: ?LineNumber = null,
     hunk_id: usize = 0,
     file_path: ?[]const u8 = null,
+    old_file_path: ?[]const u8 = null,
 
     /// This denotes the offset of beginning of the DisplayLine from the
     /// beginning of the hunk
@@ -608,6 +612,13 @@ const DisplayLine = struct {
             };
             break :blk @intCast(line_number.len);
         } else 0;
+
+        if (self.kind == .file_header) {
+            try self.setBaseStyle(plane);
+            try self.renderFileHeader(plane, offset, text_x);
+            self.resetStyle(plane);
+            return;
+        }
 
         const spans = self.syntaxSpans() orelse {
             try self.setBaseStyle(plane);
@@ -654,6 +665,74 @@ const DisplayLine = struct {
         }
 
         self.resetStyle(plane);
+    }
+
+    fn renderFileHeader(self: DisplayLine, plane: *c.ncplane, y: c_int, text_x: c_int) !void {
+        var cols: c_uint = 0;
+        c.ncplane_dim_yx(plane, null, &cols);
+        if (text_x < 0) return;
+
+        const start_x: c_uint = @intCast(text_x);
+        if (start_x >= cols) return;
+
+        const end_x: c_int = @intCast(cols);
+        var x = text_x;
+
+        // U+2550 BOX DRAWINGS DOUBLE HORIZONTAL: a solid double divider line.
+        try putDividerCells(plane, y, &x, end_x, 5);
+        if (x >= end_x) return;
+
+        try putAsciiSegment(plane, y, x, " ");
+        x += 1;
+        if (x >= end_x) return;
+
+        if (self.old_file_path) |old_path| {
+            const renamed = if (self.file_path) |new_path|
+                !pathsEqualIgnoringDiffPrefix(old_path, new_path)
+            else
+                false;
+
+            if (renamed) {
+                const text_available: usize = @intCast((end_x - x) -| 1);
+                const old_visible = clipToDisplayWidth(old_path, text_available);
+                try putSegment(plane, y, x, old_visible);
+                x += @intCast(old_visible.len);
+                if (x >= end_x) return;
+
+                try putAsciiSegment(plane, y, x, " ");
+                x += 1;
+                if (x >= end_x) return;
+
+                try putSegment(plane, y, x, "→");
+                x += 1;
+                if (x >= end_x) return;
+
+                try putAsciiSegment(plane, y, x, " ");
+                x += 1;
+                if (x >= end_x) return;
+            }
+        }
+
+        // Reserve one cell for the required trailing space when possible.
+        const text_available: usize = @intCast((end_x - x) -| 1);
+        const visible_text = clipToDisplayWidth(self.text, text_available);
+        try putSegment(plane, y, x, visible_text);
+        x += @intCast(visible_text.len);
+        if (x >= end_x) return;
+
+        try putAsciiSegment(plane, y, x, " ");
+        x += 1;
+
+        try putDividerCells(plane, y, &x, end_x, std.math.maxInt(usize));
+    }
+
+    fn putDividerCells(plane: *c.ncplane, y: c_int, x: *c_int, end_x: c_int, max_cells: usize) !void {
+        const glyph = "═";
+        var cells: usize = 0;
+        while (x.* < end_x and cells < max_cells) : (cells += 1) {
+            try putSegment(plane, y, x.*, glyph);
+            x.* += 1;
+        }
     }
 
     fn syntaxSpans(self: DisplayLine) ?[]HighlightSpan {
@@ -784,12 +863,18 @@ const DisplayLine = struct {
     }
 };
 
-/// Does NOT copy
-fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []const u8 } {
-    std.debug.assert(inputs.len > 0);
+const PathPair = struct { old_path: []const u8, new_path: []const u8 };
 
-    const first_line = inputs[0];
-    var iter = std.mem.splitBackwardsAny(u8, first_line, " ");
+/// Does NOT copy
+fn parseMeta(inputs: [][]const u8) !PathPair {
+    std.debug.assert(inputs.len > 0);
+    return try parseDiffGitPaths(inputs[0]);
+}
+
+fn parseDiffGitPaths(line: []const u8) !PathPair {
+    if (!startsWith(u8, line, "diff")) return error.MalformedMetaInput;
+
+    var iter = std.mem.splitBackwardsAny(u8, line, " ");
 
     const new_path = iter.next() orelse return error.MalformedMetaInput;
     const old_path = iter.next() orelse return error.MalformedMetaInput;
@@ -798,6 +883,15 @@ fn parseMeta(inputs: [][]const u8) !struct { old_path: []const u8, new_path: []c
         .old_path = old_path,
         .new_path = new_path,
     };
+}
+
+fn stripDiffPrefix(path: []const u8) []const u8 {
+    if (startsWith(u8, path, "a/") or startsWith(u8, path, "b/")) return path[2..];
+    return path;
+}
+
+fn pathsEqualIgnoringDiffPrefix(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, stripDiffPrefix(a), stripDiffPrefix(b));
 }
 
 fn formatLineNumber(line_number: ?usize, number_segment_width: c_uint) !?DisplayLine.LineNumber {
@@ -840,6 +934,50 @@ fn gatherTextDisplayLines(
 ) !GatherResult {
     var remaining = text;
     var result: GatherResult = .{};
+
+    if (kind == .file_header) {
+        const last_item = if (buf.items.len == 0) null else &buf.items[buf.items.len - 1];
+
+        const to_append = if (last_item) |last| blk: {
+            if (last.kind == .file_header and last.file_path.?.ptr == file_path.?.ptr) {
+                return result;
+            } else {
+                try buf.append(alloc, undefined);
+                break :blk &buf.items[buf.items.len - 1];
+            }
+        } else blk_2: {
+            try buf.append(alloc, undefined);
+            break :blk_2 &buf.items[buf.items.len - 1];
+        };
+
+        const parsed_paths = parseDiffGitPaths(text) catch null;
+        const old_path = if (parsed_paths) |paths| paths.old_path else file_path;
+        const new_path = if (parsed_paths) |paths| paths.new_path else file_path;
+
+        const file_path_display_len: usize = if (new_path) |path| @min(
+            25, // a hardcoded length for how long the name can be
+            path.len,
+            @as(usize, @intCast(diff_line_width -| 6 -| 6)), // 5 for divider before and after the file path plus one space
+        ) else 0;
+        const file_path_to_display = if (new_path) |path| path[0..file_path_display_len] else "{file path not found}";
+
+        const old_file_path_display_len: usize = if (old_path) |path| @min(
+            25,
+            path.len,
+            @as(usize, @intCast(diff_line_width -| 6 -| 6)),
+        ) else 0;
+        const old_file_path_to_display = if (old_path) |path| path[0..old_file_path_display_len] else null;
+
+        to_append.* = .{
+            .kind = kind,
+            .text = file_path_to_display,
+            .file_path = new_path,
+            .old_file_path = old_file_path_to_display,
+        };
+
+        return result;
+    }
+
     var first_segment = true;
     const first_line_number = try formatLineNumber(line_number, number_segment_width);
     const continuation_line_number = try formatLineNumber(null, number_segment_width);
@@ -1189,6 +1327,37 @@ test "parseMeta extracts old and new paths from diff header" {
     try std.testing.expectEqualStrings("b/src/components/DiffWindow.zig", meta.new_path);
 }
 
+test "file header display line stores old and new paths for rename" {
+    const alloc = std.testing.allocator;
+    var display_lines: std.ArrayList(DisplayLine) = .empty;
+    defer display_lines.deinit(alloc);
+
+    _ = try gatherTextDisplayLines(
+        alloc,
+        &display_lines,
+        .file_header,
+        "diff --git a/src/old.zig b/src/new.zig",
+        80,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "b/src/new.zig",
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), display_lines.items.len);
+    try std.testing.expectEqualStrings("a/src/old.zig", display_lines.items[0].old_file_path.?);
+    try std.testing.expectEqualStrings("b/src/new.zig", display_lines.items[0].file_path.?);
+    try std.testing.expectEqualStrings("b/src/new.zig", display_lines.items[0].text);
+    try std.testing.expect(!pathsEqualIgnoringDiffPrefix(display_lines.items[0].old_file_path.?, display_lines.items[0].file_path.?));
+}
+
+test "file header display line does not treat a b prefixes as rename" {
+    try std.testing.expect(pathsEqualIgnoringDiffPrefix("a/src/same.zig", "b/src/same.zig"));
+}
+
 test "parseHunk classifies context add and remove lines" {
     const alloc = std.testing.allocator;
 
@@ -1197,7 +1366,7 @@ test "parseHunk classifies context add and remove lines" {
     const remove = "-const old = @import(\"old.zig\");";
     var inputs = [_][]const u8{ context, add, remove };
 
-    const hunk = try parseHunk(alloc, "@@ -1,1 +1,3 @@", &inputs);
+    const hunk = try parseHunk(alloc, 0, "@@ -1,1 +1,3 @@", &inputs);
     defer hunk.deinit(alloc);
 
     try std.testing.expectEqual(@as(usize, 1), hunk.old_start);
@@ -1218,7 +1387,7 @@ test "parseHunk parses omitted range lengths as one" {
     const alloc = std.testing.allocator;
     var inputs = [_][]const u8{" line"};
 
-    const hunk = try parseHunk(alloc, "@@ -57 +58 @@ fn name", &inputs);
+    const hunk = try parseHunk(alloc, 0, "@@ -57 +58 @@ fn name", &inputs);
     defer hunk.deinit(alloc);
 
     try std.testing.expectEqual(@as(usize, 57), hunk.old_start);
@@ -1314,7 +1483,7 @@ test "hunk display lines track old and new source offsets" {
         " const z",
     };
 
-    const hunk = try parseHunk(alloc, "@@ -1,3 +1,3 @@", &inputs);
+    const hunk = try parseHunk(alloc, 0, "@@ -1,3 +1,3 @@", &inputs);
     defer hunk.deinit(alloc);
 
     var display_lines: std.ArrayList(DisplayLine) = .empty;
@@ -1351,7 +1520,7 @@ test "wrapped hunk display lines track offsets within stripped source" {
         "-gone",
     };
 
-    const hunk = try parseHunk(alloc, "@@ -1,2 +1,1 @@", &inputs);
+    const hunk = try parseHunk(alloc, 0, "@@ -1,2 +1,1 @@", &inputs);
     defer hunk.deinit(alloc);
 
     var display_lines: std.ArrayList(DisplayLine) = .empty;

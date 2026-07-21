@@ -1,11 +1,14 @@
 # TODO
-- [ ] Refine arg sets 
-- [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
-- [ ] Optimize SPSC (caching tail / head + false sharing prevention)
-- [ ] File picker (but only for files changed)
 - [ ] Customized render for file / hunk metadata
-- [ ] Comments
+- [ ] Comments (this would likely need to be its own component)
+- [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
+- [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
+- [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)
+- [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
+- [ ] File picker (but only for files changed)
 - [ ] Refine grapheme width estimation with real notcurses api
+- [ ] Persistent config
+- [ ] Customizable themes
 - [ ] Streaming api for diff invocation
 - [ ] Distribution
 

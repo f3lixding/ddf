@@ -15,7 +15,7 @@ pub fn init(io: std.Io, path: []const u8) !void {
 
     if (global_file != null) return error.AlreadyInitialized;
 
-    if (std.c.getenv("DF_LOG")) |value| {
+    if (std.c.getenv("DDF_LOG")) |value| {
         const converted: []const u8 = std.mem.span(value);
         if (parseLevel(converted)) |level| {
             min_level = level;
