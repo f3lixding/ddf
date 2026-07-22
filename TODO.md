@@ -1,6 +1,6 @@
 # TODO
-- [ ] Customized render for file / hunk metadata
 - [ ] Comments (this would likely need to be its own component)
+- [ ] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)
@@ -13,6 +13,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Customized render for file / hunk metadata
 - [x] Patch notcurses for tmux on macos build
 - [x] Put file and lines deleted / added on top line of border
 - [x] Build for macos

@@ -26,7 +26,6 @@ const default_schema: HighlightSchema = .{
 pub const Diff = struct {
     files: []FileDiff,
     display_lines: std.ArrayList(DisplayLine),
-    top_line: usize = 0,
     width: c_uint,
     widest: c_uint,
     did_wrap: bool,
@@ -198,26 +197,7 @@ pub const Diff = struct {
         };
     }
 
-    pub fn render(
-        self: Diff,
-        nc_ctx: *c.notcurses,
-        plane: *c.ncplane,
-    ) !void {
-        var rows: c_uint = 0;
-        var cols: c_uint = 0;
-        c.ncplane_dim_yx(plane, &rows, &cols);
-
-        c.ncplane_erase(plane);
-
-        const start = @min(self.top_line, self.display_lines.items.len);
-        const visible_count = @min(@as(usize, rows), self.display_lines.items.len - start);
-
-        for (self.display_lines.items[start .. start + visible_count], 0..) |line, row| {
-            try line.render(nc_ctx, plane, @intCast(row));
-        }
-    }
-
-    pub fn update(self: *Diff, width: c_uint) !bool {
+    pub fn updateWidth(self: *Diff, width: c_uint) !bool {
         const needs_regather = try self.applyPendingHighlightResponses();
 
         if (self.width == width and !needs_regather) return false;
@@ -548,7 +528,7 @@ pub const DiffLine = union(enum) {
 /// The layout of this is kind of messed up but I am too lazy to change it now.
 /// We are going to have to just stick this out and bear with this ghetto union
 /// all fields, relevant or not
-const DisplayLine = struct {
+pub const DisplayLine = struct {
     const Kind = enum {
         file_header,
         hunk_header,
