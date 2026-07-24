@@ -35,6 +35,8 @@ comments: ?Comments = null,
 top_line: usize = 0,
 focus_line: usize = 0,
 viewport_rows: usize = 1,
+viewport_cols: c_uint = 0,
+pending_resize: bool = false,
 dirty: bool = true,
 
 display_lines: std.ArrayList(DisplayLine) = .empty,
@@ -88,9 +90,9 @@ pub fn initInterface(self: *Self) Component {
             }.handleInput,
 
             .update = struct {
-                pub fn _update(ptr: *anyopaque, ft: FrameTime) !Conclusion {
+                pub fn _update(ptr: *anyopaque, ft: FrameTime, render_ctx: *const RenderCtx) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return try @call(.always_inline, update, .{ self_typed, ft });
+                    return try @call(.always_inline, update, .{ self_typed, ft, render_ctx });
                 }
             }._update,
 
@@ -236,7 +238,10 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 }
             }
         },
-        c.NCKEY_RESIZE => self.dirty = true,
+        c.NCKEY_RESIZE => {
+            self.pending_resize = true;
+            self.dirty = true;
+        },
         else => {},
     }
 
@@ -263,34 +268,17 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     try drawBorder(main_plane, active_file_name);
     const border_ns = nowNs() - border_start_ns;
 
-    var diff_update_ns: i128 = 0;
     var diff_render_ns: i128 = 0;
     var indicator_render_ns: i128 = 0;
 
     if (self.diff) |*diff| {
-        var rows: c_uint = 0;
-        var cols: c_uint = 0;
-        c.ncplane_dim_yx(sub_plane, &rows, &cols);
-        self.viewport_rows = @max(@as(usize, 1), @as(usize, @intCast(rows)));
-
-        const diff_update_start_ns = nowNs();
-        if (try diff.updateWidth(cols)) {
-            self.display_lines.clearAndFree(self.alloc);
-
-            // TODO: splice the comments line here
-            for (diff.display_lines.items) |*line| {
-                try self.display_lines.append(self.alloc, .{ .diff = .{
-                    .line = line,
-                } });
-            }
-        }
-        diff_update_ns = nowNs() - diff_update_start_ns;
+        _ = diff;
 
         const diff_render_start_ns = nowNs();
         c.ncplane_erase(sub_plane);
 
         const start = @min(self.top_line, self.display_lines.items.len);
-        const visible_count = @min(@as(usize, @intCast(rows)), self.display_lines.items.len - start);
+        const visible_count = @min(self.viewport_rows, self.display_lines.items.len - start);
 
         for (self.display_lines.items[start .. start + visible_count], 0..) |*line, viewport_row| {
             switch (line.*) {
@@ -324,13 +312,46 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         nsToMs(nowNs() - render_start_ns),
         nsToMs(ensure_ns),
         nsToMs(border_ns),
-        nsToMs(diff_update_ns),
+        0,
         nsToMs(diff_render_ns),
         nsToMs(indicator_render_ns),
     });
 }
 
-pub fn update(self: *Self, ft: FrameTime) !Conclusion {
+pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclusion {
+    if (self.pending_resize) {
+        _ = try self.ensurePlane(render_ctx);
+        self.pending_resize = false;
+
+        if (self.diff) |*diff| {
+            if (try diff.updateWidth(self.viewport_cols)) {
+                self.display_lines.clearAndFree(self.alloc);
+
+                // TODO: splice the comments line here
+                for (diff.display_lines.items) |*line| {
+                    try self.display_lines.append(self.alloc, .{ .diff = .{
+                        .line = line,
+                    } });
+                }
+
+                self.dirty = true;
+            }
+        }
+    } else if (self.diff) |*diff| {
+        if (try diff.updateHighlights()) {
+            self.display_lines.clearAndFree(self.alloc);
+
+            // TODO: splice the comments line here
+            for (diff.display_lines.items) |*line| {
+                try self.display_lines.append(self.alloc, .{ .diff = .{
+                    .line = line,
+                } });
+            }
+
+            self.dirty = true;
+        }
+    }
+
     if (self.line_indicator) |*indicator| {
         return try indicator.update(ft);
     }
@@ -446,10 +467,10 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         self.main_plane = plane;
     }
 
+    const sub_rows = if (rows >= 2) rows - 2 else rows;
+    const sub_cols = if (cols >= 4) cols - 4 else cols;
     if (self.sub_plane) |plane| {
-        const rows_ = if (rows >= 2) rows - 2 else rows;
-        const cols_ = if (cols >= 4) cols - 4 else cols;
-        if (c.ncplane_resize_simple(plane, rows_, cols_) < 0) {
+        if (c.ncplane_resize_simple(plane, sub_rows, sub_cols) < 0) {
             return error.ResizePlaneFailed;
         }
         if (c.ncplane_move_yx(plane, 1, 3) < 0) {
@@ -460,13 +481,15 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         var opts = std.mem.zeroes(c.ncplane_options);
         opts.y = 1;
         opts.x = 3;
-        opts.rows = if (rows >= 2) rows - 2 else rows;
-        opts.cols = if (cols >= 4) cols - 4 else cols;
+        opts.rows = sub_rows;
+        opts.cols = sub_cols;
         opts.name = "diff_window_sub_plane";
 
         const plane = c.ncplane_create(main_plane, &opts) orelse return error.CreatePlaneFailed;
         self.sub_plane = plane;
     }
+    self.viewport_rows = @max(@as(usize, 1), @as(usize, @intCast(sub_rows)));
+    self.viewport_cols = sub_cols;
 
     const indicator_y: c_int = @intCast((self.focus_line -| if (self.diff != null) self.top_line else 0) + 1);
     if (self.indicator_plane) |plane| {

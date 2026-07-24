@@ -154,7 +154,7 @@ fn tick(self: *Self, frame_time: FrameTime) !void {
 
     while (i > 0) {
         i -= 1;
-        const tick_res = try self.components.items[i].update(frame_time);
+        const tick_res = try self.components.items[i].update(frame_time, &self.render_ctx);
 
         switch (tick_res) {
             .Dismount => {
@@ -229,9 +229,10 @@ test "handleInputEvent mounts and dismounts components" {
         handled_count: usize = 0,
         cleanup_count: usize = 0,
 
-        fn update(ptr: *anyopaque, frame_time: FrameTime) anyerror!Conclusion {
+        fn update(ptr: *anyopaque, frame_time: FrameTime, render_ctx: *const RenderCtx) anyerror!Conclusion {
             _ = ptr;
             _ = frame_time;
+            _ = render_ctx;
             return .Noop;
         }
 

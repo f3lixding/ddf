@@ -15,7 +15,7 @@ vtable: *const VTable,
 
 pub const VTable = struct {
     update_interval: ?*const fn (*anyopaque) i64 = null,
-    update: ?*const fn (*anyopaque, FrameTime) anyerror!Conclusion = null,
+    update: ?*const fn (*anyopaque, FrameTime, *const RenderCtx) anyerror!Conclusion = null,
     render: *const fn (*anyopaque, *const RenderCtx) anyerror!void,
     key_handler: ?*const fn (*anyopaque, InputEvent) anyerror!Conclusion = null,
     clean_up: ?*const fn (*anyopaque) anyerror!void = null,
@@ -31,9 +31,9 @@ pub const VTable = struct {
 
 /// Called to update internal state that depends on app-loop time, such as
 /// animations or scheduled refreshes, as opposed to external input events.
-pub fn update(self: Component, frame_time: FrameTime) anyerror!Conclusion {
+pub fn update(self: Component, frame_time: FrameTime, render_ctx: *const RenderCtx) anyerror!Conclusion {
     const updateFn = self.vtable.update orelse return .Noop;
-    return try updateFn(self.ptr, frame_time);
+    return try updateFn(self.ptr, frame_time, render_ctx);
 }
 
 /// Called by the orchestrator to retrieve the component's preference to have

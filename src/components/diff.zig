@@ -197,6 +197,23 @@ pub const Diff = struct {
         };
     }
 
+    pub fn updateHighlights(self: *Diff) !bool {
+        if (!try self.applyPendingHighlightResponses()) return false;
+
+        self.display_lines.clearRetainingCapacity();
+
+        const adjusted_width = self.width -| 2 -| self.line_number_width;
+
+        var gather_result: GatherResult = .{};
+        for (self.files) |file| {
+            gather_result.merge(try file.gatherDisplayLines(self.alloc, &self.display_lines, adjusted_width, self.line_number_width));
+        }
+
+        self.widest = gather_result.widest +| self.line_number_width +| 2;
+        self.did_wrap = gather_result.did_wrap;
+        return true;
+    }
+
     pub fn updateWidth(self: *Diff, width: c_uint) !bool {
         const needs_regather = try self.applyPendingHighlightResponses();
 

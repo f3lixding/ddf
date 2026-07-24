@@ -67,7 +67,8 @@ pub fn initInterface(self: *Self) Component {
             }.handleInput,
 
             .update = struct {
-                pub fn _update(ptr: *anyopaque, ft: FrameTime) !Conclusion {
+                pub fn _update(ptr: *anyopaque, ft: FrameTime, render_ctx: *const RenderCtx) !Conclusion {
+                    _ = render_ctx;
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     return try @call(.always_inline, update, .{ self_typed, ft });
                 }
