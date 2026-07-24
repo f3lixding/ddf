@@ -104,7 +104,9 @@ pub fn initInterface(self: *Self) Component {
             .clean_up = struct {
                 pub fn cleanUp(ptr: *anyopaque) !void {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
+                    const alloc = self_typed.alloc;
                     deinit(self_typed);
+                    alloc.destroy(self_typed);
                 }
             }.cleanUp,
         },

@@ -3,6 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const options = b.addOptions();
+    options.addOption(bool, "use_testing_allocator", optimize == .Debug);
+
     const bin_name = b.option([]const u8, "bin-name", "bin name") orelse "ddf";
     const rpaths = b.option([]const u8, "rpath", "rpath to add");
     const interpreter = b.option([]const u8, "interpreter", "ELF interpreter to set with patchelf");
@@ -24,6 +28,7 @@ pub fn build(b: *std.Build) void {
     // ELF files that Nix/patchelf can reliably fix up.
     exe.use_lld = false;
     exe.pie = true;
+    exe.root_module.addOptions("build_options", options);
 
     linkNc(exe);
     linkTreeSitter(exe, b);

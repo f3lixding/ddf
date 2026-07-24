@@ -96,8 +96,23 @@ pub fn initInterface(self: *Self) Component {
                     return try @call(.always_inline, hide, .{self_typed});
                 }
             }.hide_,
+
+            .clean_up = struct {
+                pub fn cleanUp(ptr: *anyopaque) !void {
+                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
+                    deinit(self_typed);
+                    self_typed.alloc.destroy(self_typed);
+                }
+            }.cleanUp,
         },
     };
+}
+
+pub fn deinit(self: *Self) void {
+    if (self.gif) |*gif| {
+        gif.deinit();
+        self.gif = null;
+    }
 }
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {

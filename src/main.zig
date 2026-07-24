@@ -1,5 +1,6 @@
 const std = @import("std");
 const Io = std.Io;
+const build_options = @import("build_options");
 
 const util = @import("util.zig");
 const c = util.c;
@@ -106,7 +107,22 @@ pub fn main(init: std.process.Init) !void {
     const opts = try Opts.parseFromArgs(args, errMsgWriter);
     std.debug.print("{any}\n", .{opts});
 
-    opts.execute(std.heap.page_allocator, init.io) catch |err| {
+    const DebugAllocator = std.heap.DebugAllocator(.{
+        .stack_trace_frames = 20,
+    });
+    var debug_alloc: ?DebugAllocator = null;
+    const alloc = if (comptime build_options.use_testing_allocator) blk: {
+        debug_alloc = DebugAllocator{};
+        break :blk debug_alloc.?.allocator();
+    } else std.heap.page_allocator;
+    defer {
+        if (debug_alloc) |*allocator| {
+            if (allocator.deinit() == .leak)
+                @panic("Memory leaked");
+        }
+    }
+
+    opts.execute(alloc, init.io) catch |err| {
         std.log.err("Execute failed: {any}", .{err});
     };
 }

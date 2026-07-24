@@ -67,6 +67,12 @@ pub fn deinit(self: *Self, io: std.Io) void {
         self.future = null;
     }
 
+    for (self.components.items) |component| {
+        component.cleanUp() catch |err| {
+            log.err("Error cleaning up component: {any}", .{err});
+        };
+    }
+
     self.components.deinit(self.alloc);
 }
 
