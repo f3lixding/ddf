@@ -43,3 +43,20 @@ pub const RenderCtx = struct {
     term_cols: c_uint = 0,
     nc_ctx: *c.notcurses,
 };
+
+/// This is used to uniquely identify a line
+/// This struct does not take ownership of the underlying data
+pub const LineId = struct {
+    pub const LineKind = enum {
+        context,
+        old,
+        new,
+    };
+
+    file_path: []const u8,
+    /// first number is the beginning of a range
+    /// an absence of the second number means the comment is just with
+    /// reference to one line
+    line_numbers: struct { usize, ?usize },
+    kind: LineKind,
+};

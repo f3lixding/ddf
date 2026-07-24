@@ -53,9 +53,16 @@ const DisplayLine = union(enum) {
     },
     comments: struct {
         line: *Comments.DisplayLine,
-        /// Start and end. A null for end means it isn't a range
-        line_number: struct { usize, ?usize },
+        comment: *Comments.Comment,
     },
+
+    pub fn isTargetable(self: DisplayLine) bool {
+        return switch (self) {
+            // TODO: Add logic here so we don't select over file metadata
+            .diff => true,
+            .comments => |*comment| comment.line.targetable,
+        };
+    }
 };
 
 pub fn initInterface(self: *Self) Component {
