@@ -1,5 +1,9 @@
 # TODO
 - [ ] Comments (this would likely need to be its own component)
+    - [ ] Rendering during scrolling
+    - [ ] Rendering during editing (this would involve cursor)
+    - [x] Init from DiffWindow init
+    - [x] Comments component
 - [ ] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)

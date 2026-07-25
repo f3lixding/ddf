@@ -4,6 +4,7 @@ const util = @import("../util.zig");
 const consts = @import("../consts.zig");
 const c = util.c;
 const protocol = @import("../protocol.zig");
+const LineId = protocol.LineId;
 const InputEvent = protocol.InputEvent;
 const FrameTime = protocol.FrameTime;
 const Conclusion = protocol.Conclusion;
@@ -19,6 +20,14 @@ const Comments = @import("Comments.zig");
 const Self = @This();
 
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
+
+const State = union(enum) {
+    normal,
+    editing: usize,
+    select: struct { usize, usize },
+};
+
+state: State = .normal,
 
 alloc: std.mem.Allocator,
 output: []u8,
@@ -48,7 +57,8 @@ display_lines: std.ArrayList(DisplayLine) = .empty,
 const DisplayLine = union(enum) {
     diff: struct {
         line: *diff_.DisplayLine,
-        comment_idx: ?usize = 0,
+        stable_idx: usize = 0,
+        comment_idx: ?usize = null,
         comment_hidden: bool = false,
     },
     comments: struct {
@@ -86,7 +96,8 @@ pub fn initInterface(self: *Self) Component {
             }.isDirty,
 
             .key_handler = struct {
-                pub fn handleInput(ptr: *anyopaque, event: InputEvent) !Conclusion {
+                pub fn handleInput(ptr: *anyopaque, event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
+                    _ = render_ctx;
                     // We will only handle key down
                     if (event.key == 0 or event.ncinput.evtype == c.NCTYPE_RELEASE)
                         return .Noop;
@@ -122,7 +133,7 @@ pub fn initInterface(self: *Self) Component {
     };
 }
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
+pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) !Self {
     const log = std.log.scoped(.diff_window);
     const init_start_ns = nowNs();
     const command_start_ns = nowNs();
@@ -159,9 +170,10 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
         var dw_display_lines: std.ArrayList(DisplayLine) = .empty;
         errdefer dw_display_lines.deinit(alloc);
 
-        for (diff.display_lines.items) |*diff_display_lines| {
+        for (diff.display_lines.items, 0..) |*diff_display_lines, original_idx| {
             try dw_display_lines.append(alloc, .{ .diff = .{
                 .line = diff_display_lines,
+                .stable_idx = original_idx,
             } });
         }
 
@@ -169,6 +181,11 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io) !Self {
 
         break :blk diff;
     };
+
+    // TODO: find a better place to initialize this
+    const planes = try self.ensurePlane(render_ctx);
+    self.comments = try .init(alloc, render_ctx.nc_ctx, .{ .parent_plane = planes.sub_plane });
+
     const parse_ns = nowNs() - parse_start_ns;
 
     log.info("DiffWindow.init profile: total_ms={d:.3} command_ms={d:.3} diff_init_ms={d:.3}", .{
@@ -211,45 +228,100 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
-    switch (input_event.key) {
-        'q', c.NCKEY_ESC => return .Dismount,
-        'j', c.NCKEY_DOWN => {
-            if (self.diff != null) {
-                if (self.moveFocusDown()) {
-                    self.dirty = true;
-                }
-            }
-        },
-        'k', c.NCKEY_UP => {
-            if (self.diff != null) {
-                if (self.moveFocusUp()) {
-                    self.dirty = true;
-                }
-            }
-        },
-        'u', 'U' => {
-            if (self.diff != null) {
-                if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                    if (self.moveFocusPageUp()) {
-                        self.dirty = true;
+    // Special casing universal events
+    if (input_event.key == c.NCKEY_RESIZE) {
+        self.pending_resize = true;
+        self.dirty = true;
+
+        return .Noop;
+    }
+
+    switch (self.state) {
+        .normal => {
+            switch (input_event.key) {
+                'q', c.NCKEY_ESC => return .Dismount,
+                'j', c.NCKEY_DOWN => {
+                    if (self.diff != null) {
+                        if (self.moveFocusDown()) {
+                            self.dirty = true;
+                        }
                     }
-                }
-            }
-        },
-        'd', 'D' => {
-            if (self.diff != null) {
-                if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                    if (self.moveFocusPageDown()) {
-                        self.dirty = true;
+                },
+                'k', c.NCKEY_UP => {
+                    if (self.diff != null) {
+                        if (self.moveFocusUp()) {
+                            self.dirty = true;
+                        }
                     }
-                }
+                },
+                'u', 'U' => {
+                    if (self.diff != null) {
+                        if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                            if (self.moveFocusPageUp()) {
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                },
+                'd', 'D' => {
+                    if (self.diff != null) {
+                        if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                            if (self.moveFocusPageDown()) {
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                },
+                'c', 'C' => {
+                    if (self.diff != null) {
+                        const focused_line = &self.display_lines.items[self.focus_line];
+                        switch (focused_line.*) {
+                            .diff => |*diff_display_line| {
+                                if (self.comments) |*comments| {
+                                    // here we are only considering one line since we got here via normal mode
+                                    const src_line_number: usize = if (diff_display_line.line.line_number) |*line_number| blk: {
+                                        const int = std.fmt.parseInt(usize, line_number.buf[0..line_number.len], 10) catch 0;
+                                        break :blk int;
+                                    } else 0;
+
+                                    const line_id: LineId = .{
+                                        .src_line_numbers = .{ src_line_number, null },
+                                        .file_path = diff_display_line.line.file_path orelse "no file path",
+                                        .display_rank = diff_display_line.stable_idx,
+                                        .kind = diff_display_line.line.kind,
+                                    };
+
+                                    const comment = try comments.newComment(self.alloc, line_id);
+
+                                    const start = comments.display_lines.items.len;
+                                    try comment.toDisplayLines(self.alloc, self.viewport_cols, &comments.display_lines);
+
+                                    for (comments.display_lines.items[start..], 0..) |*comment_display_line, i| {
+                                        try self.display_lines.insert(self.alloc, self.focus_line + 1 + i, .{ .comments = .{
+                                            .line = comment_display_line,
+                                            .comment = comment,
+                                        } });
+                                    }
+
+                                    self.state = .{ .editing = self.focus_line + 1 };
+                                    self.dirty = true;
+                                }
+                            },
+                            .comments => {},
+                        }
+                    }
+                },
+                else => {},
             }
         },
-        c.NCKEY_RESIZE => {
-            self.pending_resize = true;
-            self.dirty = true;
+
+        .editing => |line| {
+            _ = line;
         },
-        else => {},
+
+        .select => |range| {
+            _ = range;
+        },
     }
 
     return .Noop;
@@ -292,7 +364,12 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
                 .diff => |*diff_line| {
                     try diff_line.line.render(render_ctx.nc_ctx, sub_plane, @intCast(viewport_row));
                 },
-                else => {},
+                .comments => |*comment_line| {
+                    const content = comment_line.line.content;
+                    if (c.ncplane_putnstr_yx(sub_plane, @intCast(viewport_row), 0, content.len, content.ptr) < 0) {
+                        return error.PutStrFailed;
+                    }
+                },
             }
         }
 

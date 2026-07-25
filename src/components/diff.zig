@@ -8,6 +8,7 @@ const HighlightSchema = highlight.HighlightSchema;
 const HighlightSpan = highlight.HighlightSpan;
 const Language = highlight.Language;
 const HighlightService = highlight.Service;
+const LineKind = @import("../protocol.zig").LineKind;
 
 const startsWith = std.mem.startsWith;
 
@@ -526,9 +527,9 @@ pub const DiffLine = union(enum) {
     fn intoDisplayLine(self: DiffLine, number_segment_width: c_uint) DisplayLine {
         _ = number_segment_width;
         return switch (self) {
-            .context => |inner| .{ .kind = DisplayLine.Kind.context, .text = inner.content },
-            .add => |inner| .{ .kind = DisplayLine.Kind.add, .text = inner.content },
-            .remove => |inner| .{ .kind = DisplayLine.Kind.remove, .text = inner.content },
+            .context => |inner| .{ .kind = LineKind.context, .text = inner.content },
+            .add => |inner| .{ .kind = LineKind.add, .text = inner.content },
+            .remove => |inner| .{ .kind = LineKind.remove, .text = inner.content },
         };
     }
 
@@ -546,13 +547,7 @@ pub const DiffLine = union(enum) {
 /// We are going to have to just stick this out and bear with this ghetto union
 /// all fields, relevant or not
 pub const DisplayLine = struct {
-    const Kind = enum {
-        file_header,
-        hunk_header,
-        context,
-        add,
-        remove,
-    };
+    pub const Kind = LineKind;
 
     const LineNumber = struct {
         buf: [32]u8,
@@ -563,7 +558,7 @@ pub const DisplayLine = struct {
         }
     };
 
-    kind: Kind,
+    kind: LineKind,
     text: []const u8,
     line_number: ?LineNumber = null,
     hunk_id: usize = 0,
@@ -877,8 +872,8 @@ fn parseDiffGitPaths(line: []const u8) !PathPair {
     const old_path = iter.next() orelse return error.MalformedMetaInput;
 
     return .{
-        .old_path = old_path,
-        .new_path = new_path,
+        .old_path = stripDiffPrefix(old_path),
+        .new_path = stripDiffPrefix(new_path),
     };
 }
 
@@ -918,7 +913,7 @@ fn formatLineNumber(line_number: ?usize, number_segment_width: c_uint) !?Display
 fn gatherTextDisplayLines(
     alloc: std.mem.Allocator,
     buf: *std.ArrayList(DisplayLine),
-    kind: DisplayLine.Kind,
+    kind: LineKind,
     text: []const u8,
     diff_line_width: c_uint,
     number_segment_width: c_uint,
@@ -958,12 +953,16 @@ fn gatherTextDisplayLines(
         ) else 0;
         const file_path_to_display = if (new_path) |path| path[0..file_path_display_len] else "{file path not found}";
 
-        const old_file_path_display_len: usize = if (old_path) |path| @min(
-            25,
-            path.len,
-            @as(usize, @intCast(diff_line_width -| 6 -| 6)),
-        ) else 0;
-        const old_file_path_to_display = if (old_path) |path| path[0..old_file_path_display_len] else null;
+        const old_file_path_to_display = if (old_path) |path| blk: {
+            if (new_path != null and std.mem.eql(u8, path, new_path.?)) break :blk null;
+
+            const old_file_path_display_len: usize = @min(
+                25,
+                path.len,
+                @as(usize, @intCast(diff_line_width -| 6 -| 6)),
+            );
+            break :blk path[0..old_file_path_display_len];
+        } else null;
 
         to_append.* = .{
             .kind = kind,
@@ -1226,8 +1225,8 @@ test "parseMeta extracts old and new paths from diff header" {
 
     const meta = try parseMeta(&inputs);
 
-    try std.testing.expectEqualStrings("a/src/components/DiffWindow.zig", meta.old_path);
-    try std.testing.expectEqualStrings("b/src/components/DiffWindow.zig", meta.new_path);
+    try std.testing.expectEqualStrings("src/components/DiffWindow.zig", meta.old_path);
+    try std.testing.expectEqualStrings("src/components/DiffWindow.zig", meta.new_path);
 }
 
 test "file header display line stores old and new paths for rename" {
@@ -1247,18 +1246,40 @@ test "file header display line stores old and new paths for rename" {
         null,
         null,
         null,
-        "b/src/new.zig",
+        "src/new.zig",
     );
 
     try std.testing.expectEqual(@as(usize, 1), display_lines.items.len);
-    try std.testing.expectEqualStrings("a/src/old.zig", display_lines.items[0].old_file_path.?);
-    try std.testing.expectEqualStrings("b/src/new.zig", display_lines.items[0].file_path.?);
-    try std.testing.expectEqualStrings("b/src/new.zig", display_lines.items[0].text);
+    try std.testing.expectEqualStrings("src/old.zig", display_lines.items[0].old_file_path.?);
+    try std.testing.expectEqualStrings("src/new.zig", display_lines.items[0].file_path.?);
+    try std.testing.expectEqualStrings("src/new.zig", display_lines.items[0].text);
     try std.testing.expect(!pathsEqualIgnoringDiffPrefix(display_lines.items[0].old_file_path.?, display_lines.items[0].file_path.?));
 }
 
 test "file header display line does not treat a b prefixes as rename" {
+    const alloc = std.testing.allocator;
+    var display_lines: std.ArrayList(DisplayLine) = .empty;
+    defer display_lines.deinit(alloc);
+
+    _ = try gatherTextDisplayLines(
+        alloc,
+        &display_lines,
+        .file_header,
+        "diff --git a/src/same.zig b/src/same.zig",
+        80,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "src/same.zig",
+    );
+
     try std.testing.expect(pathsEqualIgnoringDiffPrefix("a/src/same.zig", "b/src/same.zig"));
+    try std.testing.expectEqualStrings("src/same.zig", display_lines.items[0].file_path.?);
+    try std.testing.expectEqualStrings("src/same.zig", display_lines.items[0].text);
+    try std.testing.expectEqual(@as(?[]const u8, null), display_lines.items[0].old_file_path);
 }
 
 test "parseHunk classifies context add and remove lines" {
@@ -1339,8 +1360,8 @@ test "Diff.init parses a single file diff" {
     try std.testing.expect(!diff.did_wrap);
 
     try std.testing.expectEqual(@as(usize, 1), diff.files.len);
-    try std.testing.expectEqualStrings("a/src/components/DiffWindow.zig", diff.files[0].old_path);
-    try std.testing.expectEqualStrings("b/src/components/DiffWindow.zig", diff.files[0].new_path);
+    try std.testing.expectEqualStrings("src/components/DiffWindow.zig", diff.files[0].old_path);
+    try std.testing.expectEqualStrings("src/components/DiffWindow.zig", diff.files[0].new_path);
 
     try std.testing.expectEqual(@as(usize, 1), diff.files[0].hunks.len);
     try std.testing.expectEqual(@as(usize, 3), diff.files[0].hunks[0].lines.len);

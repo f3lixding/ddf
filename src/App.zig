@@ -122,7 +122,7 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
 
     while (i > 0) {
         i -= 1;
-        const handle_res: Conclusion = try self.components.items[i].handleInputEvent(evt);
+        const handle_res: Conclusion = try self.components.items[i].handleInputEvent(evt, &self.render_ctx);
 
         switch (handle_res) {
             .Dismount => {
@@ -241,8 +241,9 @@ test "handleInputEvent mounts and dismounts components" {
             _ = render_ctx;
         }
 
-        fn keyHandler(ptr: *anyopaque, evt: InputEvent) anyerror!Conclusion {
+        fn keyHandler(ptr: *anyopaque, evt: InputEvent, render_ctx: *const RenderCtx) anyerror!Conclusion {
             _ = evt;
+            _ = render_ctx;
             const self: *@This() = @ptrCast(@alignCast(ptr));
             self.handled_count += 1;
             return self.result;

@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const util = @import("util.zig");
 const c = util.c;
 
@@ -44,19 +46,53 @@ pub const RenderCtx = struct {
     nc_ctx: *c.notcurses,
 };
 
-/// This is used to uniquely identify a line
+pub const LineKind = enum {
+    file_header,
+    hunk_header,
+    context,
+    add,
+    remove,
+};
+
+/// This is used to uniquely identify one line or a set of lines
 /// This struct does not take ownership of the underlying data
 pub const LineId = struct {
-    pub const LineKind = enum {
-        context,
-        old,
-        new,
+    pub const Context = struct {
+        pub fn hash(_: @This(), key: LineId) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+
+            std.hash.autoHashStrat(&hasher, key.file_path, .Deep);
+            std.hash.autoHash(&hasher, key.src_line_numbers.@"0");
+            if (key.src_line_numbers.@"1") |num| {
+                std.hash.autoHash(&hasher, num);
+            }
+            std.hash.autoHash(&hasher, key.kind);
+
+            return hasher.final();
+        }
+
+        pub fn eql(_: @This(), a: LineId, b: LineId) bool {
+            return std.mem.eql(u8, a.file_path, b.file_path) and
+                a.src_line_numbers.@"0" == b.src_line_numbers.@"0" and
+                a.src_line_numbers.@"1" == b.src_line_numbers.@"1" and
+                a.kind == b.kind;
+        }
     };
 
     file_path: []const u8,
-    /// first number is the beginning of a range
-    /// an absence of the second number means the comment is just with
+
+    /// First number is the beginning of a range
+    /// An absence of the second number means the comment is just with
     /// reference to one line
-    line_numbers: struct { usize, ?usize },
+    src_line_numbers: struct { usize, ?usize },
+
+    /// The index of DiffWindow.DisplayLine the line is associated with
+    /// This is "approximate" because this index is unstable. Addition /
+    /// removal of comments will render these indices inaccurate
+    /// For that reason, these indices are from the array _before_ any comments
+    /// are added
+    /// If a comment is referring to a range, then we take the closing range
+    display_rank: usize,
+
     kind: LineKind,
 };

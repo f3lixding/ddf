@@ -60,9 +60,9 @@ pub fn initInterface(self: *Self) Component {
             }.isDirty,
 
             .key_handler = struct {
-                pub fn handleInput(ptr: *anyopaque, event: InputEvent) !Conclusion {
+                pub fn handleInput(ptr: *anyopaque, event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return try @call(.always_inline, handleInputEvent, .{ self_typed, event });
+                    return try @call(.always_inline, handleInputEvent, .{ self_typed, event, render_ctx });
                 }
             }.handleInput,
 
@@ -136,7 +136,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
     };
 }
 
-pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
+pub fn handleInputEvent(self: *Self, input_event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
     if (self.hidden) {
         return .Noop;
     }
@@ -172,7 +172,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 if (count >= open_diff.len) {
                     const diff_window = try self.alloc.create(DiffWindow);
                     errdefer self.alloc.destroy(diff_window);
-                    diff_window.* = try DiffWindow.init(self.alloc, self.io);
+                    diff_window.* = try DiffWindow.init(self.alloc, self.io, render_ctx);
 
                     self.hiding = true;
 

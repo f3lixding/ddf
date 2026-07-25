@@ -17,7 +17,7 @@ pub const VTable = struct {
     update_interval: ?*const fn (*anyopaque) i64 = null,
     update: ?*const fn (*anyopaque, FrameTime, *const RenderCtx) anyerror!Conclusion = null,
     render: *const fn (*anyopaque, *const RenderCtx) anyerror!void,
-    key_handler: ?*const fn (*anyopaque, InputEvent) anyerror!Conclusion = null,
+    key_handler: ?*const fn (*anyopaque, InputEvent, *const RenderCtx) anyerror!Conclusion = null,
     clean_up: ?*const fn (*anyopaque) anyerror!void = null,
     is_dirty: *const fn (*anyopaque) bool = &struct {
         pub fn isDirty(ptr: *anyopaque) bool {
@@ -51,9 +51,9 @@ pub fn render(self: Component, render_ctx: *const RenderCtx) anyerror!bool {
     return false;
 }
 
-pub fn handleInputEvent(self: Component, evt: InputEvent) anyerror!Conclusion {
+pub fn handleInputEvent(self: Component, evt: InputEvent, render_ctx: *const RenderCtx) anyerror!Conclusion {
     const keyHandlerFn = self.vtable.key_handler orelse return .Noop;
-    return try keyHandlerFn(self.ptr, evt);
+    return try keyHandlerFn(self.ptr, evt, render_ctx);
 }
 
 pub fn cleanUp(self: Component) anyerror!void {

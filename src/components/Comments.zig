@@ -40,7 +40,7 @@ pub const Comment = struct {
     pub fn formattedMessage(self: Comment, alloc: std.mem.Allocator, buf: *std.ArrayList(u8)) !void {
         var temp_buf: [1024]u8 = undefined;
 
-        const line_numbers = &self.line_id.line_numbers;
+        const line_numbers = &self.line_id.src_line_numbers;
         const start = line_numbers.@"0";
         const end = line_numbers.@"1";
         const file_path = self.line_id.file_path;
@@ -163,7 +163,6 @@ pub const DisplayLine = struct {
 };
 
 pub const Opts = struct {
-    cursor_gif_name: []const u8,
     parent_plane: *c.ncplane,
 };
 
@@ -191,16 +190,27 @@ gif: ?Gif = null,
 //
 // This aforementioned method requires that the order of Comments to
 // DiffWindow.DisplayLine to be stable. In general, this is a safe assumption to have.
-comments: std.ArrayList(Comment) = .empty,
+comments: std.HashMap(LineId, std.ArrayList(*Comment), LineId.Context, std.hash_map.default_max_load_percentage),
 display_lines: std.ArrayList(DisplayLine) = .empty,
 
-pub fn init(alloc: std.mem.Allocator, nc_ctx: *c.notcurses, opts: Opts) Self {
+const SortCtx = struct {
+    pub fn lessThan(ctx: @This(), a: Comment, b: Comment) bool {
+        _ = ctx;
+
+        const stable_idx_a = a.line_id.display_rank;
+        const stable_idx_b = b.line_id.display_rank;
+
+        return stable_idx_a < stable_idx_b;
+    }
+};
+
+pub fn init(alloc: std.mem.Allocator, nc_ctx: *c.notcurses, opts: Opts) !Self {
     const gif = try Gif.init(
         nc_ctx,
         opts.parent_plane,
         .{
             .height = 1,
-            .asset_name = opts.cursor_gif_name,
+            .asset_name = "typing-cat.gif",
         },
     );
 
@@ -215,10 +225,15 @@ pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
         gif.deinit();
     }
 
-    for (self.comments.items) |*comment| {
-        comment.deinit(alloc);
+    var vals_iter = self.comments.valueIterator();
+    while (vals_iter.next()) |val| {
+        for (val.items) |comment| {
+            comment.deinit(alloc);
+            alloc.destroy(comment);
+        }
+        val.deinit(alloc);
     }
-    self.comments.deinit(alloc);
+    self.comments.deinit();
 
     for (self.display_lines.items) |*display_line| {
         display_line.deinit(alloc);
@@ -226,13 +241,35 @@ pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
     self.display_lines.deinit(alloc);
 }
 
-pub fn getOrPut(self: *Self, line_number: usize) !*Comment {
-    const get_or_put_res = try self.comments.getOrPut(line_number);
-    return get_or_put_res.value_ptr;
+pub fn newComment(self: *Self, alloc: std.mem.Allocator, line_id: LineId) !*Comment {
+    const new_comment = try alloc.create(Comment);
+    new_comment.* = .init(line_id);
+
+    const res = try self.comments.getOrPut(line_id);
+    if (!res.found_existing) res.value_ptr.* = .empty;
+    try res.value_ptr.append(alloc, new_comment);
+
+    return new_comment;
 }
 
-pub fn removeComment(self: *Self, line_number: usize) bool {
-    return self.comments.remove(line_number);
+pub fn removeComment(self: *Self, alloc: std.mem.Allocator, comment_to_delete: *const Comment) bool {
+    const line_id = &comment_to_delete.line_id;
+
+    if (self.comments.get(line_id)) |*comments| {
+        const found_and_deleted = for (comments.items) |comment| blk: {
+            if (comment_to_delete == comment) {
+                comment.deinit(alloc);
+                break :blk true;
+            }
+        } else false;
+
+        if (comments.items.len == 0)
+            _ = self.comments.remove(line_id);
+
+        return found_and_deleted;
+    }
+
+    return false;
 }
 
 /// Caller owns the returned slice
@@ -240,6 +277,10 @@ pub fn formattedMessage(self: Self, alloc: std.mem.Allocator) !?[]const u8 {
     if (self.comments.items.len == 0) return null;
 
     var res: std.ArrayList(u8) = .empty;
+
+    for (self.comments.items) |*comment| {
+        try comment.formattedMessage(alloc, &res);
+    }
 
     return try res.toOwnedSlice(alloc);
 }
