@@ -162,34 +162,6 @@ pub const DisplayLine = struct {
     }
 };
 
-pub const Opts = struct {
-    parent_plane: *c.ncplane,
-};
-
-/// This is really the cursor. This component owns the lifecycle of this Gif
-/// end to end, including the plane on which it is rendered on.
-gif: ?Gif = null,
-// Current problems (doodle, delete later):
-// - Relate a Comment to a DiffWindow.DisplayLine (this one is not so important)
-// - Relate a DiffWindow.DisplayLine to Comment (so we know how to splice it)
-// - Ensure this relationship survives resizes
-// - Ensure this relationship survives splices (i.e. during comment addition)
-//
-// During resize or comments addition / removal, the array of
-// DiffWindow.DisplayLine gets reconstructed. Its indices consequently considered
-// unstable. For that reason we cannot use its indices as anchor to maintain
-// the aforementioned relationship.
-//
-// At the time of writing, there is no partial rebuild of the array of
-// DiffWindow.DisplayLine. Every time there is a change the entire array of
-// DiffWindow.DisplayLine would be flushed and rebuilt.
-// A reasonable (and perhaps naive) approach here would be the following:
-// - As we are rebuilding the array of DiffWindow.DisplayLine, we have a stack of Comments
-// - For each DiffWindow.DisplayLine, we check to see if it is related to the top of the stack
-// - If it is, we append it to DiffWindow.DisplayLine
-//
-// This aforementioned method requires that the order of Comments to
-// DiffWindow.DisplayLine to be stable. In general, this is a safe assumption to have.
 comments: std.HashMap(LineId, std.ArrayList(*Comment), LineId.Context, std.hash_map.default_max_load_percentage),
 display_lines: std.ArrayList(DisplayLine) = .empty,
 
@@ -204,27 +176,13 @@ const SortCtx = struct {
     }
 };
 
-pub fn init(alloc: std.mem.Allocator, nc_ctx: *c.notcurses, opts: Opts) !Self {
-    const gif = try Gif.init(
-        nc_ctx,
-        opts.parent_plane,
-        .{
-            .height = 1,
-            .asset_name = "typing-cat.gif",
-        },
-    );
-
+pub fn init(alloc: std.mem.Allocator) !Self {
     return .{
-        .gif = gif,
         .comments = .init(alloc),
     };
 }
 
 pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
-    if (self.gif) |*gif| {
-        gif.deinit();
-    }
-
     var vals_iter = self.comments.valueIterator();
     while (vals_iter.next()) |val| {
         for (val.items) |comment| {
@@ -270,6 +228,36 @@ pub fn removeComment(self: *Self, alloc: std.mem.Allocator, comment_to_delete: *
     }
 
     return false;
+}
+
+/// Caller owns the memory
+pub fn sortedComments(self: *Self, alloc: std.mem.Allocator) ![]*Comment {
+    const Map = @TypeOf(self.comments);
+    const Entry = Map.Entry;
+
+    var entries: std.ArrayList(Entry) = .empty;
+    defer entries.deinit(alloc);
+
+    var it = self.comments.iterator();
+    while (it.next()) |entry| {
+        try entries.append(alloc, entry);
+    }
+
+    std.mem.sort(Entry, entries.items, {}, struct {
+        fn lessThan(_: void, a: Entry, b: Entry) bool {
+            return LineId.Context.lessThan({}, a.key_ptr.*, b.key_ptr.*);
+        }
+    }.lessThan);
+
+    var res: std.ArrayList(*Comment) = .empty;
+    for (entries.items) |entry| {
+        const lines = entry.value_ptr;
+        for (lines.items) |comment| {
+            try res.append(alloc, comment);
+        }
+    }
+
+    return try res.toOwnedSlice(alloc);
 }
 
 /// Caller owns the returned slice

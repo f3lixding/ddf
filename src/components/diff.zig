@@ -552,6 +552,7 @@ pub const DisplayLine = struct {
     const LineNumber = struct {
         buf: [32]u8,
         len: usize,
+        number: usize,
 
         fn slice(self: *const @This()) []const u8 {
             return self.buf[0..self.len];
@@ -906,6 +907,7 @@ fn formatLineNumber(line_number: ?usize, number_segment_width: c_uint) !?Display
     result.buf[number_width] = ' ';
     result.buf[number_width + 1] = ' ';
     result.len = gutter_len;
+    result.number = line_number orelse 0;
     return result;
 }
 
@@ -976,7 +978,10 @@ fn gatherTextDisplayLines(
 
     var first_segment = true;
     const first_line_number = try formatLineNumber(line_number, number_segment_width);
-    const continuation_line_number = try formatLineNumber(null, number_segment_width);
+    var continuation_line_number = try formatLineNumber(null, number_segment_width);
+    if (continuation_line_number) |*n| {
+        n.number = line_number orelse 0;
+    }
 
     while (remaining.len > 0) {
         const wrapped = util.wrapLine(remaining, diff_line_width);

@@ -77,6 +77,10 @@ pub const LineId = struct {
                 a.src_line_numbers.@"1" == b.src_line_numbers.@"1" and
                 a.kind == b.kind;
         }
+
+        pub fn lessThan(_: void, a: LineId, b: LineId) bool {
+            return a.display_rank < b.display_rank;
+        }
     };
 
     file_path: []const u8,

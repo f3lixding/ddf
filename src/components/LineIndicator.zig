@@ -9,6 +9,7 @@ const Conclusion = @import("../protocol.zig").Conclusion;
 const Self = @This();
 
 gif: Gif,
+hidden: bool = false,
 
 pub const Opts = struct {
     y: c_int = 0,
@@ -42,6 +43,7 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn render(self: *Self, nc_ctx: *c.notcurses) !void {
+    if (self.hidden) return;
     try self.gif.render(nc_ctx);
 }
 
@@ -51,4 +53,12 @@ pub fn isDirty(self: Self) bool {
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {
     return try self.gif.update(ft);
+}
+
+pub fn hide(self: *Self) void {
+    self.gif.hide();
+}
+
+pub fn unhide(self: *Self) void {
+    self.gif.unhide();
 }
