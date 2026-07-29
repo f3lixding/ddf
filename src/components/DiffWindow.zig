@@ -67,7 +67,7 @@ const DisplayLine = union(enum) {
         comment_hidden: bool = false,
     },
     comments: struct {
-        line: *Comments.DisplayLine,
+        line_idx: usize,
         comment: *Comments.Comment,
     },
 
@@ -343,9 +343,9 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                     const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
                                     try comment.toDisplayLines(self.alloc, comment_box_width, &comments.display_lines);
 
-                                    for (comments.display_lines.items[start..], 0..) |*comment_display_line, i| {
+                                    for (comments.display_lines.items[start..], 0..) |_, i| {
                                         try self.display_lines.insert(self.alloc, next_insertable_line_num + i, .{ .comments = .{
-                                            .line = comment_display_line,
+                                            .line_idx = start + i,
                                             .comment = comment,
                                         } });
                                     }
@@ -461,8 +461,9 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
                     try diff_line.line.render(render_ctx.nc_ctx, sub_plane, @intCast(viewport_row));
                 },
                 .comments => |*comment_line| {
-                    const content = comment_line.line.content;
-                    log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_line.line.targetable, content.len, displayWidth(content), content });
+                    const comment_display_line = self.commentDisplayLine(comment_line.line_idx) orelse continue;
+                    const content = comment_display_line.content;
+                    log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, displayWidth(content), content });
 
                     var rows: c_uint = 0;
                     var cols: c_uint = 0;
@@ -529,14 +530,14 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
 
         if (self.diff) |*diff| {
             if (try diff.updateWidth(self.viewport_cols)) {
-                try self.rebuildDisplayLinesWithComments(diff);
+                try self.rebuildDisplayLinesWithComments();
                 try self.syncEditingCursor();
                 self.dirty = true;
             }
         }
     } else if (self.diff) |*diff| {
         if (try diff.updateHighlights()) {
-            try self.rebuildDisplayLinesWithComments(diff);
+            try self.rebuildDisplayLinesWithComments();
             try self.syncEditingCursor();
             self.dirty = true;
         }
@@ -552,7 +553,22 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
     return .Noop;
 }
 
-fn rebuildDisplayLinesWithComments(self: *Self, diff: *Diff) !void {
+// 1. find corresponding display lines in comments
+// 2. find corresponding display lines in diffwindow
+// 3. rebuild the display lines for the comment
+// 4. if there are equal number of display lines after, we simply replace both
+// 5. if there are more / fewer, we insert / remove accordingly
+// fn rebuildDisplayLineForCommentEdit(self: *Self, comment: *Comments.Comment) !void {
+//     const comments = &(self.comments orelse return);
+//     const comment_id = comment.comment_id;
+//
+//
+//     // const comments_dl = comments.display_lines
+// }
+
+fn rebuildDisplayLinesWithComments(self: *Self) !void {
+    const diff = &(self.diff orelse return);
+
     const maybe_comments = if (self.comments) |*comments| blk: {
         break :blk try comments.sortedComments(self.alloc);
     } else null;
@@ -672,7 +688,7 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
     for (comments.display_lines.items[start..], 0..) |*comment_display_line, i| {
         log.info("generated comment display line comment_ptr=0x{x} local_idx={d} targetable={} bytes={d} display_width={d} content='{s}'", .{ @intFromPtr(comment), i, comment_display_line.targetable, comment_display_line.content.len, displayWidth(comment_display_line.content), comment_display_line.content });
         try self.display_lines.append(self.alloc, .{ .comments = .{
-            .line = comment_display_line,
+            .line_idx = start + i,
             .comment = comment,
         } });
     }
@@ -681,8 +697,8 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
 fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
     const log = std.log.scoped(.diff_window);
     const before_len = self.display_lines.items.len;
-    if (self.diff) |*diff| {
-        try self.rebuildDisplayLinesWithComments(diff);
+    if (self.diff != null) {
+        try self.rebuildDisplayLinesWithComments();
         log.info("rebuild after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.items.len });
         try self.syncEditingCursor();
         self.dirty = true;
@@ -699,7 +715,7 @@ fn syncEditingCursor(self: *Self) !void {
     const maybe_cursor_display_line = self.lastEditableDisplayLineForComment(editing.first_display_line, editing.comment);
     const cursor_display_line = maybe_cursor_display_line orelse editing.first_display_line;
     log.info("sync editing cursor comment_ptr=0x{x} first_display_line={d} found_line={?} cursor_line={d} top_line_before={d} content_len={d} end_col={d}", .{ @intFromPtr(editing.comment), editing.first_display_line, maybe_cursor_display_line, cursor_display_line, self.top_line, editing.comment.content.items.len, self.commentEndColumn(editing.comment) });
-    self.scrollDisplayLineToBottom(cursor_display_line);
+    self.autoScroll(cursor_display_line);
 
     if (self.cursor) |*cursor| {
         const y: c_int = @intCast(cursor_display_line -| self.top_line);
@@ -717,7 +733,8 @@ fn lastEditableDisplayLineForComment(self: *const Self, start_from: usize, comme
         switch (self.display_lines.items[idx]) {
             .comments => |comment_line| {
                 if (comment_line.comment != comment) break;
-                if (comment_line.line.targetable) result = idx;
+                const comment_display_line = self.commentDisplayLine(comment_line.line_idx) orelse break;
+                if (comment_display_line.targetable) result = idx;
             },
             else => break,
         }
@@ -726,9 +743,16 @@ fn lastEditableDisplayLineForComment(self: *const Self, start_from: usize, comme
     return result;
 }
 
-fn scrollDisplayLineToBottom(self: *Self, display_line: usize) void {
-    const max_top = self.display_lines.items.len -| self.viewport_rows;
-    self.top_line = @min(display_line -| (self.viewport_rows -| 1), max_top);
+/// Adjusts the top line such that the focus line is situated appropriately:
+/// - Top line remains unchanged if the new focus line is in view
+/// - If the new focus line is not in view (i.e. below the bottom of the
+///   current viewport), we place choose a top line that would place the new
+///   focus line at the second last line of the viewport (we are leaving one line
+///   for the bottom of the border)
+fn autoScroll(self: *Self, destination_idx: usize) void {
+    const bottom = self.top_line +| self.viewport_rows;
+    if (destination_idx < bottom) return;
+    self.top_line = destination_idx -| self.viewport_rows +| 2;
 }
 
 fn commentEndColumn(self: *const Self, comment: *const Comments.Comment) c_uint {
@@ -757,6 +781,12 @@ fn commentEndColumn(self: *const Self, comment: *const Comments.Comment) c_uint 
     }
 
     return result;
+}
+
+fn commentDisplayLine(self: *const Self, idx: usize) ?*Comments.DisplayLine {
+    const comments = if (self.comments) |*comments| comments else return null;
+    if (idx >= comments.display_lines.items.len) return null;
+    return &comments.display_lines.items[idx];
 }
 
 fn displayWidth(content: []const u8) c_uint {

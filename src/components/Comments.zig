@@ -10,11 +10,13 @@ const Self = @This();
 pub const Comment = struct {
     const CommentSelf = @This();
 
+    comment_id: u16,
     line_id: LineId,
     content: std.ArrayList(u8) = .empty,
 
-    pub fn init(line_id: LineId) Comment {
+    pub fn init(comment_id: u16, line_id: LineId) Comment {
         return .{
+            .comment_id = comment_id,
             .line_id = line_id,
         };
     }
@@ -71,12 +73,14 @@ pub const Comment = struct {
 
         try buf.append(alloc, .{
             .content = try borderLine(alloc, "┌", "─", "┐", inner_width),
+            .comment_id = self.comment_id,
             .targetable = false,
         });
 
         if (self.content.items.len == 0) {
             try buf.append(alloc, .{
                 .content = try contentLine(alloc, "", inner_width),
+                .comment_id = self.comment_id,
                 .targetable = true,
             });
         } else {
@@ -87,6 +91,7 @@ pub const Comment = struct {
                 if (remaining.len == 0) {
                     try buf.append(alloc, .{
                         .content = try contentLine(alloc, "", inner_width),
+                        .comment_id = self.comment_id,
                         .targetable = true,
                     });
                     continue;
@@ -98,6 +103,7 @@ pub const Comment = struct {
 
                     try buf.append(alloc, .{
                         .content = try contentLine(alloc, remaining[0..end], inner_width),
+                        .comment_id = self.comment_id,
                         .targetable = true,
                     });
 
@@ -108,8 +114,114 @@ pub const Comment = struct {
 
         try buf.append(alloc, .{
             .content = try borderLine(alloc, "└", "─", "┘", inner_width),
+            .comment_id = self.comment_id,
             .targetable = false,
         });
+    }
+
+    pub fn patchDisplayLines(
+        self: CommentSelf,
+        alloc: std.mem.Allocator,
+        width: c_uint,
+        buf: *std.ArrayList(DisplayLine),
+        existing_range_start: usize,
+        existing_range_end: usize,
+    ) !void {
+        std.debug.assert(existing_range_start < existing_range_end);
+
+        if (width < 2) return error.WidthTooSmall;
+
+        const total_width: usize = @intCast(width);
+        const inner_width = total_width - 2;
+        // skipping first line as we always draw the border
+        var cur_line = existing_range_start + 1;
+
+        if (self.content.items.len == 0) {
+            if (cur_line >= existing_range_end) {
+                try buf.insert(alloc, cur_line, undefined);
+            } else {
+                buf.items[cur_line].deinit(alloc);
+            }
+
+            buf.items[cur_line] = .{
+                .content = try contentLine(alloc, "", inner_width),
+                .comment_id = self.comment_id,
+                .targetable = true,
+            };
+            cur_line += 1;
+        } else {
+            var physical_lines = std.mem.splitScalar(u8, self.content.items, '\n');
+            while (physical_lines.next()) |physical_line| {
+                var remaining = physical_line;
+
+                if (remaining.len == 0) {
+                    if (cur_line >= existing_range_end) {
+                        try buf.insert(alloc, cur_line, undefined);
+                    } else {
+                        buf.items[cur_line].deinit(alloc);
+                    }
+
+                    buf.items[cur_line] = .{
+                        .content = try contentLine(alloc, "", inner_width),
+                        .comment_id = self.comment_id,
+                        .targetable = true,
+                    };
+                    cur_line += 1;
+                    continue;
+                }
+
+                while (remaining.len > 0) {
+                    if (cur_line >= existing_range_end) {
+                        try buf.insert(alloc, cur_line, undefined);
+                    } else {
+                        buf.items[cur_line].deinit(alloc);
+                    }
+
+                    const wrapped = util.wrapLine(remaining, @intCast(inner_width));
+                    const end = wrapped.end orelse remaining.len;
+
+                    buf.items[cur_line] = .{
+                        .content = try contentLine(alloc, remaining[0..end], inner_width),
+                        .comment_id = self.comment_id,
+                        .targetable = true,
+                    };
+                    cur_line += 1;
+
+                    remaining = remaining[end..];
+                }
+            }
+        }
+
+        if (cur_line >= existing_range_end) {
+            try buf.insert(alloc, cur_line, undefined);
+        } else {
+            buf.items[cur_line].deinit(alloc);
+        }
+        buf.items[cur_line] = .{
+            .content = try borderLine(alloc, "└", "─", "┘", inner_width),
+            .comment_id = self.comment_id,
+            .targetable = false,
+        };
+        cur_line += 1;
+
+        if (cur_line == existing_range_end) {
+            // just right, nothing to do
+        } else if (cur_line < existing_range_end) {
+            // we actually got shorter, delete the stale lines and shift later lines up
+            const remove_count = existing_range_end - cur_line;
+
+            for (buf.items[cur_line..existing_range_end]) |display_line| {
+                display_line.deinit(alloc);
+            }
+
+            @memmove(
+                buf.items[cur_line .. buf.items.len - remove_count],
+                buf.items[existing_range_end..],
+            );
+            buf.items.len -= remove_count;
+        } else if (cur_line > existing_range_end) {
+            // We grew. The extra lines were inserted above, so there is nothing else to do.
+        }
     }
 
     fn borderLine(
@@ -155,6 +267,7 @@ pub const Comment = struct {
 /// Owner of DisplayLine is responsible for freeing it
 pub const DisplayLine = struct {
     content: []const u8,
+    comment_id: u16,
     targetable: bool,
 
     pub fn deinit(self: DisplayLine, alloc: std.mem.Allocator) void {
@@ -162,6 +275,7 @@ pub const DisplayLine = struct {
     }
 };
 
+id_count: u16 = 0,
 comments: std.HashMap(LineId, std.ArrayList(*Comment), LineId.Context, std.hash_map.default_max_load_percentage),
 display_lines: std.ArrayList(DisplayLine) = .empty,
 
@@ -201,7 +315,8 @@ pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
 
 pub fn newComment(self: *Self, alloc: std.mem.Allocator, line_id: LineId) !*Comment {
     const new_comment = try alloc.create(Comment);
-    new_comment.* = .init(line_id);
+    new_comment.* = .init(self.id_count, line_id);
+    self.id_count +|= 1;
 
     const res = try self.comments.getOrPut(line_id);
     if (!res.found_existing) res.value_ptr.* = .empty;

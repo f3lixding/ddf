@@ -1,7 +1,15 @@
 # TODO
 - [ ] Comments (this would likely need to be its own component)
-    - [ ] Rendering during scrolling
-    - [ ] Rendering during editing (this would involve cursor)
+    - [ ] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
+    - [ ] New line behavior difference between tmux and native
+    - [ ] Insertion of characters that require modifiers (like question mark)
+    - [ ] Auto retraction of empty comments after exiting comment editing
+    - [ ] Comment input box title
+    - [ ] Cursor (and perhaps line indicator) alternate display inside tmux
+    - [x] Better auto scrolling after insertion of new lines 
+    - [x] Differentiate line kind while commenting
+    - [x] Rendering during scrolling
+    - [x] Rendering during editing (this would involve cursor)
     - [x] Init from DiffWindow init
     - [x] Comments component
 - [ ] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
