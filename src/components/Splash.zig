@@ -3,7 +3,7 @@
 const std = @import("std");
 
 const util = @import("../util.zig");
-const consts = @import("../consts.zig");
+const assets = @import("../assets/assets.zig");
 const c = util.c;
 const protocol = @import("../protocol.zig");
 
@@ -124,7 +124,10 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
         stdplane,
         .{
             .height = 20,
-            .asset_name = "scuba-scuba-cat.gif",
+            .asset = .{
+                .name = "scuba-scuba-cat.gif",
+                .bytes = assets.splash_screen,
+            },
         },
     );
 
@@ -240,7 +243,7 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         c.ncplane_set_bg_default(stdplane);
 
         if (self.gif) |*gif| {
-            gif.hide();
+            try gif.hide();
         }
 
         return;

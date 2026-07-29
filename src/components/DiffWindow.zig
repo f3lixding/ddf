@@ -16,6 +16,7 @@ const diff_ = @import("diff.zig");
 const Diff = diff_.Diff;
 const LineIndicator = @import("LineIndicator.zig");
 const Comments = @import("Comments.zig");
+const Cursor = @import("Cursor.zig");
 
 const Self = @This();
 
@@ -39,11 +40,11 @@ stderr: []u8,
 main_plane: ?*c.ncplane = null,
 sub_plane: ?*c.ncplane = null,
 indicator_plane: ?*c.ncplane = null,
-cursor_plane: ?*c.ncplane = null,
 
 diff: ?Diff = null,
 line_indicator: ?LineIndicator = null,
 comments: ?Comments = null,
+cursor: ?Cursor = null,
 
 top_line: usize = 0,
 focus_line: usize = 0,
@@ -94,7 +95,8 @@ pub fn initInterface(self: *Self) Component {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     if (self_typed.dirty) return true;
-                    if (self_typed.line_indicator) |indicator| return indicator.isDirty();
+                    if (self_typed.line_indicator) |*indicator| return indicator.isDirty();
+                    if (self_typed.cursor) |*cursor| return cursor.isDirty();
                     return false;
                 }
             }.isDirty,
@@ -138,7 +140,6 @@ pub fn initInterface(self: *Self) Component {
 }
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) !Self {
-    _ = render_ctx;
     const log = std.log.scoped(.diff_window);
     const init_start_ns = nowNs();
     const command_start_ns = nowNs();
@@ -189,6 +190,10 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
     self.comments = try .init(alloc);
 
+    const planes = try self.ensurePlane(render_ctx);
+    const sub_plane = planes.sub_plane;
+    self.cursor = try .init(render_ctx.nc_ctx, sub_plane, .{ .height = 2 });
+
     const parse_ns = nowNs() - parse_start_ns;
 
     log.info("DiffWindow.init profile: total_ms={d:.3} command_ms={d:.3} diff_init_ms={d:.3}", .{
@@ -212,6 +217,10 @@ pub fn deinit(self: *Self) void {
     if (self.comments) |*comments| {
         comments.deinit(self.alloc);
     }
+    if (self.cursor) |*cursor| {
+        cursor.deinit();
+    }
+
     if (self.indicator_plane) |plane| {
         _ = c.ncplane_destroy(plane);
         self.indicator_plane = null;
@@ -346,6 +355,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                     } };
 
                                     self.hideLineIndicator();
+                                    try self.syncEditingCursor();
 
                                     self.dirty = true;
                                 }
@@ -441,6 +451,9 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
             c.ncplane_erase(plane);
         }
     }
+    if (self.cursor) |*cursor| {
+        try cursor.render(render_ctx.nc_ctx);
+    }
     indicator_render_ns = nowNs() - indicator_render_start_ns;
 
     self.dirty = false;
@@ -463,18 +476,23 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
         if (self.diff) |*diff| {
             if (try diff.updateWidth(self.viewport_cols)) {
                 try self.rebuildDisplayLinesWithComments(diff);
+                try self.syncEditingCursor();
                 self.dirty = true;
             }
         }
     } else if (self.diff) |*diff| {
         if (try diff.updateHighlights()) {
             try self.rebuildDisplayLinesWithComments(diff);
+            try self.syncEditingCursor();
             self.dirty = true;
         }
     }
 
     if (self.line_indicator) |*indicator| {
-        return try indicator.update(ft);
+        _ = try indicator.update(ft);
+    }
+    if (self.cursor) |*cursor| {
+        _ = try cursor.update(ft);
     }
 
     return .Noop;
@@ -558,6 +576,73 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
             .comment = comment,
         } });
     }
+}
+
+fn syncEditingCursor(self: *Self) !void {
+    const editing = switch (self.state) {
+        .editing => |editing| editing,
+        else => return,
+    };
+
+    const cursor_display_line = self.lastEditableDisplayLineForComment(editing.comment) orelse editing.first_display_line;
+    self.scrollDisplayLineToBottom(cursor_display_line);
+
+    if (self.cursor) |*cursor| {
+        const y: c_int = @intCast(cursor_display_line -| self.top_line);
+        const x: c_int = @intCast(self.commentBoxX() + 1 + self.commentEndColumn(editing.comment));
+        try cursor.move(y, x);
+        cursor.unhide();
+    }
+}
+
+fn lastEditableDisplayLineForComment(self: *const Self, comment: *const Comments.Comment) ?usize {
+    var result: ?usize = null;
+
+    for (self.display_lines.items, 0..) |line, idx| {
+        switch (line) {
+            .comments => |comment_line| {
+                if (comment_line.comment == comment and comment_line.line.targetable) {
+                    result = idx;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return result;
+}
+
+fn scrollDisplayLineToBottom(self: *Self, display_line: usize) void {
+    const max_top = self.display_lines.items.len -| self.viewport_rows;
+    self.top_line = @min(display_line -| (self.viewport_rows -| 1), max_top);
+}
+
+fn commentEndColumn(self: *const Self, comment: *const Comments.Comment) c_uint {
+    const comment_x = self.commentBoxX();
+    const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
+    const inner_width = comment_box_width - 2;
+    const content = comment.content.items;
+
+    if (content.len == 0) return 0;
+
+    var result: c_uint = 0;
+    var physical_lines = std.mem.splitScalar(u8, content, '\n');
+    while (physical_lines.next()) |physical_line| {
+        if (physical_line.len == 0) {
+            result = 0;
+            continue;
+        }
+
+        var remaining = physical_line;
+        while (remaining.len > 0) {
+            const wrapped = util.wrapLine(remaining, inner_width);
+            result = wrapped.display_width;
+            const end = wrapped.end orelse remaining.len;
+            remaining = remaining[end..];
+        }
+    }
+
+    return result;
 }
 
 fn commentBoxX(self: *const Self) c_uint {

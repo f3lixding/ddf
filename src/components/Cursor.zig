@@ -1,3 +1,4 @@
+// TODO: make this component generic (and reuse)
 const std = @import("std");
 
 const util = @import("../util.zig");
@@ -10,7 +11,10 @@ const Conclusion = @import("../protocol.zig").Conclusion;
 const Self = @This();
 
 gif: Gif,
-hidden: bool = false,
+hidden: bool = true,
+
+y: c_uint = 0,
+x: c_uint = 0,
 
 pub const Opts = struct {
     y: c_int = 0,
@@ -33,13 +37,18 @@ pub fn init(
             .height = opts.height,
             .width = opts.width,
             .asset = .{
-                .name = "bongo-cat.gif",
-                .bytes = assets.line_indicator,
+                .name = "typing-cat.gif",
+                .bytes = assets.cursor_typing,
             },
         },
     );
 
-    return .{ .gif = gif };
+    var self: Self = .{
+        .gif = gif,
+    };
+    try self.gif.hide();
+
+    return self;
 }
 
 pub fn deinit(self: *Self) void {
@@ -52,17 +61,25 @@ pub fn render(self: *Self, nc_ctx: *c.notcurses) !void {
 }
 
 pub fn isDirty(self: Self) bool {
+    if (self.hidden) return false;
     return self.gif.dirty;
 }
 
 pub fn update(self: *Self, ft: FrameTime) !Conclusion {
+    if (self.hidden) return .Noop;
     return try self.gif.update(ft);
 }
 
-pub fn hide(self: *Self) void {
-    self.gif.hide();
+pub fn hide(self: *Self) !void {
+    self.hidden = true;
+    try self.gif.hide();
 }
 
 pub fn unhide(self: *Self) void {
+    self.hidden = false;
     self.gif.unhide();
+}
+
+pub fn move(self: *Self, y: c_int, x: c_int) !void {
+    try self.gif.move(y, x);
 }

@@ -6,7 +6,6 @@ const consts = @import("../consts.zig");
 const FrameTime = @import("../protocol.zig").FrameTime;
 const Conclusion = @import("../protocol.zig").Conclusion;
 
-const assets = @import("../assets/assets.zig");
 const ASSET_PATH = consts.ASSET_PATH;
 
 const Self = @This();
@@ -20,12 +19,17 @@ frame_interval_ms: i64 = 1000 / 24,
 elapsed_ms: i64 = 0,
 dirty: bool = true,
 
+pub const Asset = struct {
+    name: [:0]const u8,
+    bytes: []const u8,
+};
+
 pub const Opts = struct {
     y: c_int = 0,
     x: c_int = 0,
     height: c_uint,
     width: ?c_uint = null,
-    asset_name: [*c]const u8,
+    asset: Asset,
 };
 
 pub fn init(nc_ctx: *c.notcurses, parent_plane: *c.ncplane, opts: Opts) !Self {
@@ -33,28 +37,20 @@ pub fn init(nc_ctx: *c.notcurses, parent_plane: *c.ncplane, opts: Opts) !Self {
     var path_buf: [256]u8 = undefined;
     var full_path_buf: [256]u8 = undefined;
 
-    const subpath = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ ASSET_PATH, opts.asset_name });
+    const subpath = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ ASSET_PATH, opts.asset.name });
     const full_asset_path = try util.getDirRelativeToHomeSentinel(&full_path_buf, subpath);
     std.log.info("full asset path: {s}", .{full_asset_path});
 
     var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const file_exists = if (std.Io.Dir.accessAbsolute(io, full_asset_path, .{})) true else |_| false;
 
-    if (!file_exists) {
-        if (std.fs.path.dirname(full_asset_path)) |parent| {
-            try std.Io.Dir.cwd().createDirPath(io, parent);
-        }
-        var file = try std.Io.Dir.createFileAbsolute(io, full_asset_path, .{});
-        defer file.close(io);
-
-        const asset_bytes = if (std.mem.eql(u8, std.mem.span(opts.asset_name), "bongo-cat.gif"))
-            assets.line_indicator
-        else
-            assets.splash_screen;
-        try file.writeStreamingAll(io, asset_bytes);
+    if (std.fs.path.dirname(full_asset_path)) |parent| {
+        try std.Io.Dir.cwd().createDirPath(io, parent);
     }
+    var file = try std.Io.Dir.createFileAbsolute(io, full_asset_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, opts.asset.bytes);
 
     const visual = c.ncvisual_from_file(full_asset_path.ptr) orelse return error.GifLoadFailed;
     var popts = std.mem.zeroes(c.ncplane_options);
@@ -73,7 +69,7 @@ pub fn init(nc_ctx: *c.notcurses, parent_plane: *c.ncplane, opts: Opts) !Self {
 
         break :blk (opts.height * gif_width + gif_height - 1) / gif_height;
     };
-    popts.name = opts.asset_name;
+    popts.name = opts.asset.name.ptr;
 
     const plane = c.ncplane_create(parent_plane, &popts) orelse return error.CreatePlaneFailed;
 
@@ -144,8 +140,8 @@ pub fn render(self: *Self, nc_ctx: *c.notcurses) !void {
     self.dirty = false;
 }
 
-pub fn hide(self: *Self) void {
-    c.ncplane_erase(self.plane);
+pub fn hide(self: *Self) !void {
+    try util.makePlaneTransparent(self.plane);
     self.hidden = true;
     self.dirty = false;
 }
