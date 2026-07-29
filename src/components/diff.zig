@@ -527,9 +527,9 @@ pub const DiffLine = union(enum) {
     fn intoDisplayLine(self: DiffLine, number_segment_width: c_uint) DisplayLine {
         _ = number_segment_width;
         return switch (self) {
-            .context => |inner| .{ .kind = LineKind.context, .text = inner.content },
-            .add => |inner| .{ .kind = LineKind.add, .text = inner.content },
-            .remove => |inner| .{ .kind = LineKind.remove, .text = inner.content },
+            .context => |inner| .{ .kind = LineKind.context, .text = inner.content[1..] },
+            .add => |inner| .{ .kind = LineKind.add, .text = inner.content[1..] },
+            .remove => |inner| .{ .kind = LineKind.remove, .text = inner.content[1..] },
         };
     }
 
@@ -620,9 +620,8 @@ pub const DisplayLine = struct {
             return;
         };
 
-        const prefix_len = self.diffPrefixLen();
         const source_start = self.hunk_offset;
-        const source_end = source_start + self.text.len - prefix_len;
+        const source_end = source_start + self.text.len;
         var pos: usize = 0;
         var x: c_int = text_x;
 
@@ -634,22 +633,22 @@ pub const DisplayLine = struct {
             const source_local_end = @min(span.end - source_start, source_end - source_start);
             if (source_local_end <= source_local_start) continue;
 
-            const local_start = prefix_len + source_local_start;
-            const local_end = prefix_len + source_local_end;
-            if (local_end <= pos) continue;
+            if (source_local_end <= pos) continue;
 
-            if (pos < local_start) {
+            const styled_start = @max(source_local_start, pos);
+
+            if (pos < styled_start) {
                 try self.setBaseStyle(plane);
-                const plain = self.text[pos..local_start];
+                const plain = self.text[pos..styled_start];
                 try putSegment(plane, offset, x, plain);
                 x += @intCast(plain.len);
             }
 
             try setPackedFg(plane, default_schema.colorFor(span.kind));
-            const styled = self.text[local_start..local_end];
+            const styled = self.text[styled_start..source_local_end];
             try putSegment(plane, offset, x, styled);
             x += @intCast(styled.len);
-            pos = local_end;
+            pos = source_local_end;
         }
 
         if (pos < self.text.len) {
@@ -983,6 +982,38 @@ fn gatherTextDisplayLines(
         n.number = line_number orelse 0;
     }
 
+    if (remaining.len == 0) {
+        try buf.append(alloc, .{
+            .kind = kind,
+            .text = remaining,
+            .line_number = first_line_number,
+            .hunk_offset = if (old_buf_offset != null and new_buf_offset != null) blk: {
+                const old = old_buf_offset.?;
+                const new = new_buf_offset.?;
+                break :blk if (kind == .context or kind == .remove) old.* else if (kind == .add) new.* else 0;
+            } else 0,
+            .old_buf_hl_spans = old_buf_hl_spans,
+            .new_buf_hl_spans = new_buf_hl_spans,
+            .file_path = file_path,
+        });
+
+        if (old_buf_offset != null and new_buf_offset != null) {
+            const old = old_buf_offset.?;
+            const new = new_buf_offset.?;
+
+            if (kind == .context) {
+                old.* += 1;
+                new.* += 1;
+            } else if (kind == .remove) {
+                old.* += 1;
+            } else if (kind == .add) {
+                new.* += 1;
+            }
+        }
+
+        return result;
+    }
+
     while (remaining.len > 0) {
         const wrapped = util.wrapLine(remaining, diff_line_width);
         result.widest = @max(result.widest, wrapped.display_width);
@@ -1005,7 +1036,7 @@ fn gatherTextDisplayLines(
             if (old_buf_offset != null and new_buf_offset != null) {
                 const old = old_buf_offset.?;
                 const new = new_buf_offset.?;
-                const source_len = remaining.len - @as(usize, if (remaining.len > 0 and (remaining[0] == ' ' or remaining[0] == '+' or remaining[0] == '-')) 1 else 0) + 1;
+                const source_len = remaining.len + 1;
 
                 if (kind == .context) {
                     old.* += source_len;
@@ -1041,7 +1072,7 @@ fn gatherTextDisplayLines(
         if (old_buf_offset != null and new_buf_offset != null) {
             const old = old_buf_offset.?;
             const new = new_buf_offset.?;
-            const source_len = consumed.len - @as(usize, if (consumed.len > 0 and (consumed[0] == ' ' or consumed[0] == '+' or consumed[0] == '-')) 1 else 0);
+            const source_len = consumed.len;
 
             if (kind == .context) {
                 old.* += source_len;
@@ -1395,23 +1426,49 @@ test "hunk display lines track old and new source offsets" {
 
     // 0 is the hunk header. The rest are the hunk body lines.
     try std.testing.expectEqual(@as(usize, 5), display_lines.items.len);
-    try std.testing.expectEqualStrings(" const a", display_lines.items[1].text);
+    try std.testing.expectEqualStrings("const a", display_lines.items[1].text);
     try std.testing.expectEqual(@as(usize, 0), display_lines.items[1].hunk_offset);
 
     // Old side source is: "const a\nconst old\nconst z\n".
     // The removed line begins after "const a\n".
-    try std.testing.expectEqualStrings("-const old", display_lines.items[2].text);
+    try std.testing.expectEqualStrings("const old", display_lines.items[2].text);
     try std.testing.expectEqual(@as(usize, "const a\n".len), display_lines.items[2].hunk_offset);
 
     // New side source is: "const a\nconst new\nconst z\n".
     // The added line also begins after "const a\n".
-    try std.testing.expectEqualStrings("+const new", display_lines.items[3].text);
+    try std.testing.expectEqualStrings("const new", display_lines.items[3].text);
     try std.testing.expectEqual(@as(usize, "const a\n".len), display_lines.items[3].hunk_offset);
 
     // Context lines use the old-side offset. This line begins after
     // "const a\nconst old\n" in the old-side reconstructed hunk source.
-    try std.testing.expectEqualStrings(" const z", display_lines.items[4].text);
+    try std.testing.expectEqualStrings("const z", display_lines.items[4].text);
     try std.testing.expectEqual(@as(usize, "const a\nconst old\n".len), display_lines.items[4].hunk_offset);
+}
+
+test "empty stripped diff lines advance hunk offsets" {
+    const alloc = std.testing.allocator;
+
+    var inputs = [_][]const u8{
+        " const a,",
+        " ",
+        " const b",
+    };
+
+    const hunk = try parseHunk(alloc, 0, "@@ -1,3 +1,3 @@", &inputs);
+    defer hunk.deinit(alloc);
+
+    var display_lines: std.ArrayList(DisplayLine) = .empty;
+    defer display_lines.deinit(alloc);
+
+    _ = try hunk.gatherDisplayLines(alloc, &display_lines, 80, 1, "src/test.zig");
+
+    try std.testing.expectEqual(@as(usize, 4), display_lines.items.len);
+    try std.testing.expectEqualStrings("const a,", display_lines.items[1].text);
+    try std.testing.expectEqual(@as(usize, 0), display_lines.items[1].hunk_offset);
+    try std.testing.expectEqualStrings("", display_lines.items[2].text);
+    try std.testing.expectEqual(@as(usize, "const a,\n".len), display_lines.items[2].hunk_offset);
+    try std.testing.expectEqualStrings("const b", display_lines.items[3].text);
+    try std.testing.expectEqual(@as(usize, "const a,\n\n".len), display_lines.items[3].hunk_offset);
 }
 
 test "wrapped hunk display lines track offsets within stripped source" {
@@ -1439,17 +1496,16 @@ test "wrapped hunk display lines track offsets within stripped source" {
         }
     };
 
-    // " abcdef" wraps into " abc" and "def".
-    const first_context_segment = try Find.line(display_lines.items, .context, " abc");
+    // "abcdef" wraps into "abcd" and "ef".
+    const first_context_segment = try Find.line(display_lines.items, .context, "abcd");
     try std.testing.expectEqual(@as(usize, 0), first_context_segment.hunk_offset);
 
-    // The continuation segment starts at byte 3 in the stripped source
-    // "abcdef\n", because the first rendered segment consumed the diff prefix
-    // plus "abc" but the prefix is not present in the parsed source buffer.
-    const second_context_segment = try Find.line(display_lines.items, .context, "def");
-    try std.testing.expectEqual(@as(usize, 3), second_context_segment.hunk_offset);
+    // The continuation segment starts at byte 4 in the stripped source
+    // "abcdef\n".
+    const second_context_segment = try Find.line(display_lines.items, .context, "ef");
+    try std.testing.expectEqual(@as(usize, 4), second_context_segment.hunk_offset);
 
     // The removed line starts after the full stripped context line plus '\n'.
-    const first_remove_segment = try Find.line(display_lines.items, .remove, "-gon");
+    const first_remove_segment = try Find.line(display_lines.items, .remove, "gone");
     try std.testing.expectEqual(@as(usize, "abcdef\n".len), first_remove_segment.hunk_offset);
 }

@@ -85,11 +85,10 @@ pub fn deinit(self: *Self, io: std.Io) void {
 pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
     const log = std.log.scoped(.input_parser);
 
-    var input = std.mem.zeroes(c.ncinput);
-
     while (true) {
         try io.checkCancel();
 
+        var input = std.mem.zeroes(c.ncinput);
         const key = self.input_source.get_input_nblock(self.nc_ctx, &input);
         if (key != 0) {
             const now_ms: i64 = std.Io.Clock.real.now(io).toMilliseconds();

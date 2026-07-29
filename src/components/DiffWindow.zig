@@ -168,10 +168,13 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
     };
 
     const parse_start_ns = nowNs();
+    const planes = try self.ensurePlane(render_ctx);
+    const sub_plane = planes.sub_plane;
     self.diff = if (run_result.stdout.len == 0)
         null
     else blk: {
-        const diff = try Diff.init(alloc, io, run_result.stdout, 80);
+        const sub_plane_width = c.ncplane_dim_x(sub_plane);
+        const diff = try Diff.init(alloc, io, run_result.stdout, sub_plane_width);
 
         var dw_display_lines: std.ArrayList(DisplayLine) = .empty;
         errdefer dw_display_lines.deinit(alloc);
@@ -190,8 +193,6 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
     self.comments = try .init(alloc);
 
-    const planes = try self.ensurePlane(render_ctx);
-    const sub_plane = planes.sub_plane;
     self.cursor = try .init(render_ctx.nc_ctx, sub_plane, .{ .height = 2 });
 
     const parse_ns = nowNs() - parse_start_ns;
@@ -370,10 +371,48 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         },
 
         .editing => |editing_detail| {
-            // here we need to know the following:
-            // 1. we want to know which comment we are editing
-            // 2. we want to know which line to place the cursor
-            _ = editing_detail;
+            const comment = editing_detail.comment;
+
+            switch (input_event.key) {
+                c.NCKEY_ESC => {
+                    self.state = .normal;
+                    if (self.cursor) |*cursor| try cursor.hide();
+                    self.dirty = true;
+                },
+
+                c.NCKEY_BACKSPACE, 127 => {
+                    if (comment.content.items.len > 0) {
+                        try comment.removeContent(lastUtf8CodepointLen(comment.content.items));
+                        try self.rebuildDisplayLinesAfterEditing();
+                    }
+                },
+
+                c.NCKEY_ENTER, '\n', '\r' => {
+                    try comment.appendContent(self.alloc, "\n");
+                    try self.rebuildDisplayLinesAfterEditing();
+                },
+
+                else => {
+                    if ((input_event.ncinput.modifiers & (c.NCKEY_MOD_CTRL | c.NCKEY_MOD_ALT)) == 0) {
+                        const log = std.log.scoped(.diff_window);
+                        if (input_event.key >= 0x20 and input_event.key <= 0x7e) {
+                            const ascii: [1]u8 = .{@intCast(input_event.key)};
+                            try comment.appendContent(self.alloc, &ascii);
+                            log.info("editing append ascii key comment_ptr=0x{x} key={d} content_len={d} char='{s}'", .{ @intFromPtr(comment), input_event.key, comment.content.items.len, &ascii });
+                            try self.rebuildDisplayLinesAfterEditing();
+                        } else {
+                            const text = inputUtf8(input_event);
+                            if (isTextInput(text)) {
+                                try comment.appendContent(self.alloc, text);
+                                log.info("editing append utf8 comment_ptr=0x{x} key={d} text_len={d} content_len={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, text });
+                                try self.rebuildDisplayLinesAfterEditing();
+                            } else {
+                                log.info("editing ignored input comment_ptr=0x{x} key={d} utf8_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
+                            }
+                        }
+                    }
+                },
+            }
         },
 
         .select => |range| {
@@ -423,13 +462,28 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
                 },
                 .comments => |*comment_line| {
                     const content = comment_line.line.content;
+                    log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_line.line.targetable, content.len, displayWidth(content), content });
+
+                    var rows: c_uint = 0;
                     var cols: c_uint = 0;
-                    c.ncplane_dim_yx(sub_plane, null, &cols);
-                    const comment_x = self.commentBoxX();
-                    const clipped = util.clipToDisplayWidth(content, cols -| comment_x -| 1);
-                    if (clipped.len > 0 and c.ncplane_putnstr_yx(sub_plane, @intCast(viewport_row), @intCast(comment_x), clipped.len, clipped.ptr) < 0) {
-                        return error.PutStrFailed;
-                    }
+                    c.ncplane_dim_yx(sub_plane, &rows, &cols);
+
+                    const y: c_uint = @intCast(viewport_row);
+                    const x = self.commentBoxX();
+                    if (y >= rows or x >= cols) continue;
+
+                    // Avoid writing into the final terminal column. Some
+                    // terminals/notcurses paths reject UTF-8 EGCs there.
+                    const available_cols: usize = cols -| x -| 1;
+                    if (available_cols == 0) continue;
+
+                    const clipped = util.clipToDisplayWidth(content, available_cols);
+                    if (clipped.len == 0) continue;
+
+                    putCommentSegment(sub_plane, @intCast(y), @intCast(x), clipped) catch |err| {
+                        log.err("comment render failed y={d} x={d} rows={d} cols={d} text_len={d} clipped_len={d} err={}", .{ y, x, rows, cols, content.len, clipped.len, err });
+                        return err;
+                    };
                 },
             }
         }
@@ -563,18 +617,75 @@ fn optionalPathEql(a: ?[]const u8, b: ?[]const u8) bool {
     return std.mem.eql(u8, a.?, b.?);
 }
 
+fn putCommentSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !void {
+    if (text.len == 0 or y < 0 or x < 0) return;
+
+    var rows: c_uint = 0;
+    var cols: c_uint = 0;
+    c.ncplane_dim_yx(plane, &rows, &cols);
+
+    const uy: c_uint = @intCast(y);
+    if (uy >= rows) return;
+
+    var cx = x;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (cx < 0) return;
+        const ux: c_uint = @intCast(cx);
+        if (ux + 1 >= cols) return;
+
+        const cp_len = utf8CodepointLen(text[i..]);
+        var egc_buf: [8:0]u8 = [_:0]u8{0} ** 8;
+        @memcpy(egc_buf[0..cp_len], text[i .. i + cp_len]);
+
+        var bytes_written: usize = 0;
+        const written = c.ncplane_putegc_yx(plane, y, cx, &egc_buf, &bytes_written);
+        if (written < 0) {
+            // Do not take down the app for a render clipping issue. The caller
+            // already clipped to the visible width, but notcurses can still
+            // reject some EGCs near the right edge.
+            return;
+        }
+
+        cx += @max(written, 1);
+        i += cp_len;
+    }
+}
+
+fn utf8CodepointLen(input: []const u8) usize {
+    std.debug.assert(input.len > 0);
+
+    const len = std.unicode.utf8ByteSequenceLength(input[0]) catch return 1;
+    if (len > input.len) return 1;
+    return len;
+}
+
 fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
+    const log = std.log.scoped(.diff_window);
     const comments = if (self.comments) |*comments| comments else return;
     const start = comments.display_lines.items.len;
     const comment_x = self.commentBoxX();
     const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
+    log.info("append comment display lines comment_ptr=0x{x} content_len={d} viewport_cols={d} comment_x={d} box_width={d}", .{ @intFromPtr(comment), comment.content.items.len, self.viewport_cols, comment_x, comment_box_width });
     try comment.toDisplayLines(self.alloc, comment_box_width, &comments.display_lines);
 
-    for (comments.display_lines.items[start..]) |*comment_display_line| {
+    for (comments.display_lines.items[start..], 0..) |*comment_display_line, i| {
+        log.info("generated comment display line comment_ptr=0x{x} local_idx={d} targetable={} bytes={d} display_width={d} content='{s}'", .{ @intFromPtr(comment), i, comment_display_line.targetable, comment_display_line.content.len, displayWidth(comment_display_line.content), comment_display_line.content });
         try self.display_lines.append(self.alloc, .{ .comments = .{
             .line = comment_display_line,
             .comment = comment,
         } });
+    }
+}
+
+fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
+    const log = std.log.scoped(.diff_window);
+    const before_len = self.display_lines.items.len;
+    if (self.diff) |*diff| {
+        try self.rebuildDisplayLinesWithComments(diff);
+        log.info("rebuild after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.items.len });
+        try self.syncEditingCursor();
+        self.dirty = true;
     }
 }
 
@@ -584,7 +695,10 @@ fn syncEditingCursor(self: *Self) !void {
         else => return,
     };
 
-    const cursor_display_line = self.lastEditableDisplayLineForComment(editing.comment) orelse editing.first_display_line;
+    const log = std.log.scoped(.diff_window);
+    const maybe_cursor_display_line = self.lastEditableDisplayLineForComment(editing.first_display_line, editing.comment);
+    const cursor_display_line = maybe_cursor_display_line orelse editing.first_display_line;
+    log.info("sync editing cursor comment_ptr=0x{x} first_display_line={d} found_line={?} cursor_line={d} top_line_before={d} content_len={d} end_col={d}", .{ @intFromPtr(editing.comment), editing.first_display_line, maybe_cursor_display_line, cursor_display_line, self.top_line, editing.comment.content.items.len, self.commentEndColumn(editing.comment) });
     self.scrollDisplayLineToBottom(cursor_display_line);
 
     if (self.cursor) |*cursor| {
@@ -595,17 +709,17 @@ fn syncEditingCursor(self: *Self) !void {
     }
 }
 
-fn lastEditableDisplayLineForComment(self: *const Self, comment: *const Comments.Comment) ?usize {
+fn lastEditableDisplayLineForComment(self: *const Self, start_from: usize, comment: *const Comments.Comment) ?usize {
     var result: ?usize = null;
+    var idx = start_from;
 
-    for (self.display_lines.items, 0..) |line, idx| {
-        switch (line) {
+    while (idx < self.display_lines.items.len) : (idx += 1) {
+        switch (self.display_lines.items[idx]) {
             .comments => |comment_line| {
-                if (comment_line.comment == comment and comment_line.line.targetable) {
-                    result = idx;
-                }
+                if (comment_line.comment != comment) break;
+                if (comment_line.line.targetable) result = idx;
             },
-            else => {},
+            else => break,
         }
     }
 
@@ -643,6 +757,37 @@ fn commentEndColumn(self: *const Self, comment: *const Comments.Comment) c_uint 
     }
 
     return result;
+}
+
+fn displayWidth(content: []const u8) c_uint {
+    return util.wrapLine(content, std.math.maxInt(c_uint)).display_width;
+}
+
+fn inputUtf8(input_event: InputEvent) []const u8 {
+    const raw = input_event.ncinput.utf8[0..];
+    return std.mem.sliceTo(raw, 0);
+}
+
+fn isTextInput(text: []const u8) bool {
+    if (text.len == 0) return false;
+
+    // Do not append C0/DEL controls. Printable ASCII is handled from
+    // input_event.key before we trust ncinput.utf8 because notcurses can report
+    // stale/control bytes there for ordinary keypresses on this path.
+    if (text.len == 1 and (text[0] < 0x20 or text[0] == 0x7f)) return false;
+
+    return std.unicode.utf8ValidateSlice(text);
+}
+
+fn lastUtf8CodepointLen(content: []const u8) usize {
+    if (content.len == 0) return 0;
+
+    var idx = content.len - 1;
+    while (idx > 0 and (content[idx] & 0b1100_0000) == 0b1000_0000) {
+        idx -= 1;
+    }
+
+    return content.len - idx;
 }
 
 fn commentBoxX(self: *const Self) c_uint {
@@ -728,19 +873,6 @@ fn hideLineIndicator(self: *Self) void {
     }
 }
 
-// fn makePlaneTransparent(plane: *c.ncplane) !void {
-//     var cell = std.mem.zeroes(c.nccell);
-//
-//     if (c.nccell_set_fg_alpha(&cell, c.NCALPHA_TRANSPARENT) < 0)
-//         return error.SetAlphaFailed;
-//     if (c.nccell_set_bg_alpha(&cell, c.NCALPHA_TRANSPARENT) < 0)
-//         return error.SetAlphaFailed;
-//
-//     if (c.ncplane_set_base_cell(plane, &cell) < 0)
-//         return error.SetBaseCellFailed;
-//
-//     c.ncplane_erase(plane);
-// }
 fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     main_plane: *c.ncplane,
     sub_plane: *c.ncplane,

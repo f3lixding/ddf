@@ -26,7 +26,7 @@ pub const Comment = struct {
     pub fn appendContent(
         self: *Comment,
         alloc: std.mem.Allocator,
-        incoming: []u8,
+        incoming: []const u8,
     ) !void {
         try self.content.appendSlice(alloc, incoming);
     }
