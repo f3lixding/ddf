@@ -2,7 +2,7 @@
 //! the bottom and only at the bottom of the stack.
 const std = @import("std");
 
-const util = @import("../util.zig");
+const util = @import("../util/root.zig");
 const assets = @import("../assets/assets.zig");
 const c = util.c;
 const protocol = @import("../protocol.zig");

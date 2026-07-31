@@ -1,4 +1,5 @@
 # TODO
+- [ ] Fenwick tree refactor
 - [ ] Comments (this would likely need to be its own component)
     - [ ] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
     - [ ] New line behavior difference between tmux and native

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const util = @import("../util.zig");
+const util = @import("../util/root.zig");
 const c = util.c;
 const treesitter = @import("../TreeSitter.zig");
 const ts = treesitter.ts;

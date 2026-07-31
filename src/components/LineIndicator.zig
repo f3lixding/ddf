@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const util = @import("../util.zig");
+const util = @import("../util/root.zig");
 const c = util.c;
 const Gif = @import("Gif.zig");
 const assets = @import("../assets/assets.zig");

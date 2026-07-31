@@ -1,7 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.diff);
 
-const util = @import("../util.zig");
+const util = @import("../util/root.zig");
 const c = util.c;
 const highlight = @import("syntax_highlighter.zig");
 const HighlightSchema = highlight.HighlightSchema;

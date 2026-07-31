@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const util = @import("../util.zig");
+const util = @import("../util/root.zig");
 const c = util.c;
 const protocol = @import("../protocol.zig");
 const InputEvent = protocol.InputEvent;

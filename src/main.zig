@@ -2,7 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const build_options = @import("build_options");
 
-const util = @import("util.zig");
+const util = @import("util/root.zig");
 const c = util.c;
 const logging = @import("logging.zig");
 const InputParser = @import("InputParser.zig");
@@ -128,7 +128,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test {
-    _ = @import("util.zig");
+    _ = @import("util/root.zig");
     _ = @import("InputParser.zig");
     _ = @import("App.zig");
     _ = @import("components/diff.zig");
