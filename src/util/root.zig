@@ -3,6 +3,7 @@ const text = @import("text.zig");
 const plane = @import("plane.zig");
 const leaky_bucket = @import("leaky_bucket.zig");
 const path = @import("path.zig");
+const fw = @import("fenwick_tree.zig");
 
 pub const c = @import("c.zig").c;
 
@@ -18,3 +19,10 @@ pub const LeakyBucket = leaky_bucket.LeakyBucket;
 
 pub const getDirRelativeToHome = path.getDirRelativeToHome;
 pub const getDirRelativeToHomeSentinel = path.getDirRelativeToHomeSentinel;
+
+pub const FenwickTreeStorage = fw.FenwickTreeStorage;
+
+// TODO: remove for when we actually use this
+test {
+    _ = @import("fenwick_tree.zig");
+}
