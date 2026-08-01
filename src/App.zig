@@ -179,6 +179,8 @@ fn render(self: *const Self, nc_ctx: *c.notcurses) !void {
     var needs_to_call_render = false;
     var component_render_ns: i128 = 0;
     for (self.components.items) |*comp| {
+        if (!comp.isDirty()) continue;
+
         const comp_start_ns = nowNs();
         const rendered = try comp.render(&self.render_ctx);
         component_render_ns += nowNs() - comp_start_ns;

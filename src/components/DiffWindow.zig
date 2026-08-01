@@ -57,7 +57,7 @@ focus_line: usize = 0,
 viewport_rows: usize = 1,
 viewport_cols: c_uint = 0,
 pending_resize: bool = false,
-dirty: bool = true,
+display_dirty: bool = true,
 
 display_lines: DisplayLineStorage,
 
@@ -100,7 +100,8 @@ pub fn initInterface(self: *Self) Component {
             .is_dirty = struct {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    if (self_typed.dirty) return true;
+                    if (self_typed.display_dirty) return true;
+                    if (self_typed.diff) |diff| if (diff.isDirty()) return true;
                     if (self_typed.line_indicator) |*indicator| return indicator.isDirty();
                     if (self_typed.cursor) |*cursor| return cursor.isDirty();
                     return false;
@@ -246,7 +247,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
     // Special casing universal events
     if (input_event.key == c.NCKEY_RESIZE) {
         self.pending_resize = true;
-        self.dirty = true;
+        self.display_dirty = true;
 
         return .Noop;
     }
@@ -259,7 +260,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 'j', c.NCKEY_DOWN => {
                     if (self.diff != null) {
                         if (self.moveFocusDown()) {
-                            self.dirty = true;
+                            self.display_dirty = true;
                         }
                     }
                 },
@@ -267,7 +268,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 'k', c.NCKEY_UP => {
                     if (self.diff != null) {
                         if (self.moveFocusUp()) {
-                            self.dirty = true;
+                            self.display_dirty = true;
                         }
                     }
                 },
@@ -276,7 +277,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     if (self.diff != null) {
                         if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
                             if (self.moveFocusPageUp()) {
-                                self.dirty = true;
+                                self.display_dirty = true;
                             }
                         }
                     }
@@ -286,7 +287,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     if (self.diff != null) {
                         if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
                             if (self.moveFocusPageDown()) {
-                                self.dirty = true;
+                                self.display_dirty = true;
                             }
                         }
                     }
@@ -318,31 +319,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                     // 1. Regardless of what the delta is in terms of displaylines, we move to the next focus line for editing. This could mean that we scroll on behalf of the user
                                     // 2. Hide the LineIndicator
                                     const comment = try comments.newComment(self.alloc, line_id);
-                                    const next_insertable_line_num = blk: {
-                                        // we'll take that of the closing half, if any
-                                        const focus_src_line_num = line_id.src_line_numbers.@"1" orelse line_id.src_line_numbers.@"0";
-
-                                        const display_line_count = self.display_lines.len();
-                                        if (self.focus_line + 1 >= display_line_count) {
-                                            break :blk self.focus_line + 1;
-                                        } else {
-                                            var idx = self.focus_line + 1;
-                                            while (idx < display_line_count) : (idx += 1) {
-                                                const line = self.display_lines.getPtr(idx) orelse break :blk display_line_count;
-                                                switch (line.*) {
-                                                    .diff => |diff| {
-                                                        if (diff.line.line_number) |line_number| {
-                                                            const diff_line_number = line_number.number;
-                                                            if (diff_line_number == 0) continue;
-                                                            if (focus_src_line_num < diff_line_number) break :blk idx;
-                                                        }
-                                                    },
-                                                    else => {},
-                                                }
-                                            }
-                                            break :blk display_line_count;
-                                        }
-                                    };
+                                    const next_insertable_line_num = self.commentInsertIndexForFocusedDiff(diff_display_line.line);
 
                                     const comment_x = self.commentBoxX();
                                     const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
@@ -363,7 +340,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                     self.hideLineIndicator();
                                     try self.syncEditingCursor();
 
-                                    self.dirty = true;
+                                    self.display_dirty = true;
                                 }
                             },
                             .comments => {},
@@ -394,7 +371,6 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                             }
                             self.state = .normal;
                             if (self.cursor) |*cursor| try cursor.hide();
-                            self.dirty = true;
                         },
 
                         c.NCKEY_BACKSPACE, 127 => {
@@ -447,64 +423,70 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     const sub_plane = planes.sub_plane;
     const indicator_plane = planes.line_indicator_plane;
 
-    const border_start_ns = nowNs();
-    const active_file_name = if (self.diff) |*diff|
-        diff.fileNameForDisplayLine(self.focus_line)
-    else
-        null;
-    try drawBorder(main_plane, active_file_name);
-    const border_ns = nowNs() - border_start_ns;
+    const diff_dirty = if (self.diff) |diff| diff.isDirty() else false;
+    const display_dirty = self.display_dirty or diff_dirty;
+
+    var border_ns: i128 = 0;
+    if (display_dirty) {
+        const border_start_ns = nowNs();
+        const active_file_name = if (self.diff) |*diff|
+            diff.fileNameForDisplayLine(self.focus_line)
+        else
+            null;
+        try drawBorder(main_plane, active_file_name);
+        border_ns = nowNs() - border_start_ns;
+    }
 
     var diff_render_ns: i128 = 0;
-    var indicator_render_ns: i128 = 0;
+    if (display_dirty) {
+        if (self.diff) |*diff| {
+            const diff_render_start_ns = nowNs();
+            c.ncplane_erase(sub_plane);
 
-    if (self.diff) |*diff| {
-        _ = diff;
+            const display_line_count = self.display_lines.len();
+            const start = @min(self.top_line, display_line_count);
+            const visible_count = @min(self.viewport_rows, display_line_count - start);
 
-        const diff_render_start_ns = nowNs();
-        c.ncplane_erase(sub_plane);
+            if (visible_count > 0) {
+                var render_lines_ctx: RenderVisibleLinesCtx = .{
+                    .self = self,
+                    .nc_ctx = render_ctx.nc_ctx,
+                    .sub_plane = sub_plane,
+                };
+                try self.display_lines.performActionOnRange(
+                    start,
+                    start + visible_count - 1,
+                    renderVisibleDisplayLine,
+                    &render_lines_ctx,
+                );
+            }
 
-        const display_line_count = self.display_lines.len();
-        const start = @min(self.top_line, display_line_count);
-        const visible_count = @min(self.viewport_rows, display_line_count - start);
-
-        if (visible_count > 0) {
-            var render_lines_ctx: RenderVisibleLinesCtx = .{
-                .self = self,
-                .nc_ctx = render_ctx.nc_ctx,
-                .sub_plane = sub_plane,
-            };
-            try self.display_lines.performActionOnRange(
-                start,
-                start + visible_count - 1,
-                renderVisibleDisplayLine,
-                &render_lines_ctx,
-            );
-        }
-
-        diff_render_ns = nowNs() - diff_render_start_ns;
-    } else {
-        c.ncplane_erase(sub_plane);
-        const msg = "No diff to display";
-        if (c.ncplane_putnstr_yx(sub_plane, 0, 0, msg.len, msg.ptr) < 0) {
-            return error.PutStrFailed;
+            diff.markClean();
+            diff_render_ns = nowNs() - diff_render_start_ns;
+        } else {
+            c.ncplane_erase(sub_plane);
+            const msg = "No diff to display";
+            if (c.ncplane_putnstr_yx(sub_plane, 0, 0, msg.len, msg.ptr) < 0) {
+                return error.PutStrFailed;
+            }
         }
     }
 
+    var indicator_render_ns: i128 = 0;
     const indicator_render_start_ns = nowNs();
     if (indicator_plane) |plane| {
         if (self.line_indicator) |*indicator| {
-            try indicator.render(render_ctx.nc_ctx);
-        } else {
+            if (indicator.isDirty()) try indicator.render(render_ctx.nc_ctx);
+        } else if (display_dirty) {
             c.ncplane_erase(plane);
         }
     }
     if (self.cursor) |*cursor| {
-        try cursor.render(render_ctx.nc_ctx);
+        if (cursor.isDirty()) try cursor.render(render_ctx.nc_ctx);
     }
     indicator_render_ns = nowNs() - indicator_render_start_ns;
 
-    self.dirty = false;
+    self.display_dirty = false;
 
     log.debug("DiffWindow.render profile: total_ms={d:.3} ensure_ms={d:.3} border_ms={d:.3} diff_update_ms={d:.3} diff_render_ms={d:.3} indicator_ms={d:.3}", .{
         nsToMs(nowNs() - render_start_ns),
@@ -569,14 +551,13 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
         if (self.diff) |*diff| {
             if (try diff.updateWidth(self.viewport_cols)) {
                 try self.rebuildDisplayLinesWithComments();
+                self.refreshEditingDisplayLineAfterRebuild();
                 try self.syncEditingCursor();
-                self.dirty = true;
+                self.display_dirty = true;
             }
         }
     } else if (self.diff) |*diff| {
-        if (try diff.updateHighlights()) {
-            self.dirty = true;
-        }
+        _ = try diff.updateHighlights();
     }
 
     if (self.line_indicator) |*indicator| {
@@ -618,6 +599,30 @@ fn rebuildDisplayLinesWithComments(self: *Self) !void {
             }
         }
     }
+}
+
+fn commentInsertIndexForFocusedDiff(self: *Self, focused: *const diff_.DisplayLine) usize {
+    var idx = self.focus_line + 1;
+    while (idx < self.display_lines.len()) : (idx += 1) {
+        const line = self.display_lines.getPtr(idx) orelse return self.display_lines.len();
+        switch (line.*) {
+            .diff => |diff_line| {
+                if (!sameDiffSource(focused, diff_line.line)) return idx;
+            },
+            .comments => {},
+        }
+    }
+    return self.display_lines.len();
+}
+
+fn sameDiffSource(a: *const diff_.DisplayLine, b: *const diff_.DisplayLine) bool {
+    const a_number = if (a.line_number) |line_number| line_number.number else return false;
+    const b_number = if (b.line_number) |line_number| line_number.number else return false;
+    if (a_number == 0 or b_number == 0) return false;
+
+    return a_number == b_number and
+        a.kind == b.kind and
+        optionalPathEql(a.file_path, b.file_path);
 }
 
 fn isLastDisplayLineForSource(lines: []const diff_.DisplayLine, idx: usize) bool {
@@ -677,7 +682,7 @@ fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
     try self.patchDisplayLinesForEditedComment(edit_state);
     log.info("patch after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.len() });
     try self.syncEditingCursor();
-    self.dirty = true;
+    self.display_dirty = true;
 }
 
 fn patchDisplayLinesForEditedComment(self: *Self, edit_state: State.EditState) !void {
@@ -740,6 +745,30 @@ fn commentDisplayLineCount(self: *Self, first_display_line: usize, comment: *con
     }
 
     return count;
+}
+
+fn refreshEditingDisplayLineAfterRebuild(self: *Self) void {
+    switch (self.state) {
+        .editing => |*edit_state| switch (edit_state.*) {
+            .normal => |*editing| {
+                editing.first_display_line = self.firstDisplayLineForComment(editing.comment) orelse editing.first_display_line;
+            },
+            .deletion => {},
+        },
+        else => {},
+    }
+}
+
+fn firstDisplayLineForComment(self: *Self, comment: *const Comments.Comment) ?usize {
+    var idx: usize = 0;
+    while (idx < self.display_lines.len()) : (idx += 1) {
+        const line = self.display_lines.getPtr(idx) orelse return null;
+        switch (line.*) {
+            .comments => |comment_line| if (comment_line.comment == comment) return idx,
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn syncEditingCursor(self: *Self) !void {

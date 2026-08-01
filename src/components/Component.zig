@@ -43,8 +43,12 @@ pub fn updateInterval(self: Component) ?i64 {
     return updateIntervalFn(self.ptr);
 }
 
+pub fn isDirty(self: Component) bool {
+    return self.vtable.is_dirty(self.ptr);
+}
+
 pub fn render(self: Component, render_ctx: *const RenderCtx) anyerror!bool {
-    if (self.vtable.is_dirty(self.ptr)) {
+    if (self.isDirty()) {
         try self.vtable.render(self.ptr, render_ctx);
         return true;
     }

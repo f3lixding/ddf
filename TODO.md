@@ -1,5 +1,4 @@
 # TODO
-- [ ] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [ ] Visual mode (for selection)
 - [ ] Search / reverse search
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
@@ -16,6 +15,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [x] Comments (this would likely need to be its own component)
     - [x] Comment input box title
     - [x] Auto retraction of empty comments after exiting comment editing

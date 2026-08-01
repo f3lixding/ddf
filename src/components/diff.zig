@@ -35,6 +35,7 @@ pub const Diff = struct {
     line_number_width: c_uint,
     highlighter: HighlightService,
     io: std.Io,
+    dirty: bool = true,
 
     /// The caller needs to ensure the input stays intact until deinit is
     /// called. The construction of Diff as well as its children makes no
@@ -207,6 +208,7 @@ pub const Diff = struct {
             display_line.new_buf_hl_spans = hunk.new_buf_hl_spans;
         }
 
+        self.dirty = true;
         return true;
     }
 
@@ -236,7 +238,16 @@ pub const Diff = struct {
         self.width = width;
         self.widest = gather_result.widest +| self.line_number_width +| 2;
         self.did_wrap = gather_result.did_wrap;
+        self.dirty = true;
         return true;
+    }
+
+    pub fn isDirty(self: Diff) bool {
+        return self.dirty;
+    }
+
+    pub fn markClean(self: *Diff) void {
+        self.dirty = false;
     }
 
     fn applyPendingHighlightResponses(self: *Diff) !bool {
