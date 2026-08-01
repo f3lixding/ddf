@@ -4,7 +4,7 @@
     - [ ] Insertion of characters that require modifiers (like question mark)
     - [ ] Auto retraction of empty comments after exiting comment editing
     - [ ] Comment input box title
-    - [ ] Cursor (and perhaps line indicator) alternate display inside tmux
+    - [x] Cursor (and perhaps line indicator) alternate display inside tmux
     - [x] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
     - [x] Better auto scrolling after insertion of new lines 
     - [x] Differentiate line kind while commenting
@@ -18,6 +18,7 @@
 - [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
 - [ ] File picker (but only for files changed)
+- [ ] A proper readme
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Persistent config
 - [ ] Customizable themes

@@ -393,23 +393,15 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 },
 
                 else => {
-                    if ((input_event.ncinput.modifiers & (c.NCKEY_MOD_CTRL | c.NCKEY_MOD_ALT)) == 0) {
-                        const log = std.log.scoped(.diff_window);
-                        if (input_event.key >= 0x20 and input_event.key <= 0x7e) {
-                            const ascii: [1]u8 = .{@intCast(input_event.key)};
-                            try comment.appendContent(self.alloc, &ascii);
-                            log.info("editing append ascii key comment_ptr=0x{x} key={d} content_len={d} char='{s}'", .{ @intFromPtr(comment), input_event.key, comment.content.items.len, &ascii });
-                            try self.rebuildDisplayLinesAfterEditing();
-                        } else {
-                            const text = inputUtf8(input_event);
-                            if (isTextInput(text)) {
-                                try comment.appendContent(self.alloc, text);
-                                log.info("editing append utf8 comment_ptr=0x{x} key={d} text_len={d} content_len={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, text });
-                                try self.rebuildDisplayLinesAfterEditing();
-                            } else {
-                                log.info("editing ignored input comment_ptr=0x{x} key={d} utf8_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
-                            }
-                        }
+                    const log = std.log.scoped(.diff_window);
+                    var text_buf: [c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8 = undefined;
+                    const text = inputText(input_event, &text_buf);
+                    if (isTextInput(text)) {
+                        try comment.appendContent(self.alloc, text);
+                        log.info("editing append text comment_ptr=0x{x} key={d} text_len={d} content_len={d} modifiers={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, input_event.ncinput.modifiers, text });
+                        try self.rebuildDisplayLinesAfterEditing();
+                    } else {
+                        log.info("editing ignored input comment_ptr=0x{x} key={d} text_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
                     }
                 },
             }
@@ -521,7 +513,7 @@ fn renderVisibleDisplayLine(ctx: *RenderVisibleLinesCtx, line: *DisplayLine) !vo
             try diff_line.line.render(ctx.nc_ctx, ctx.sub_plane, @intCast(viewport_row));
         },
         .comments => |*comment_line| {
-            const comment_display_line = ctx.self.commentDisplayLine(comment_line.comment, comment_line.line_idx) orelse return;
+            const comment_display_line = commentDisplayLine(comment_line.comment, comment_line.line_idx) orelse return;
             const content = comment_display_line.content;
             log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, displayWidth(content), content });
 
@@ -563,8 +555,6 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
         }
     } else if (self.diff) |*diff| {
         if (try diff.updateHighlights()) {
-            try self.rebuildDisplayLinesWithComments();
-            try self.syncEditingCursor();
             self.dirty = true;
         }
     }
@@ -846,6 +836,32 @@ fn commentDisplayLine(comment: *Comments.Comment, idx: usize) ?*Comments.Display
 
 fn displayWidth(content: []const u8) c_uint {
     return util.wrapLine(content, std.math.maxInt(c_uint)).display_width;
+}
+
+fn inputText(input_event: InputEvent, buf: *[c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8) []const u8 {
+    const effective_text = effectiveInputText(input_event, buf);
+    if (isTextInput(effective_text)) return effective_text;
+
+    // Without effective text, continue to ignore shortcut-style modified keys.
+    if ((input_event.ncinput.modifiers & (c.NCKEY_MOD_CTRL | c.NCKEY_MOD_ALT)) != 0) return "";
+
+    if (input_event.key >= 0x20 and input_event.key <= 0x7e) {
+        buf[0] = @intCast(input_event.key);
+        return buf[0..1];
+    }
+
+    return inputUtf8(input_event);
+}
+
+fn effectiveInputText(input_event: InputEvent, buf: *[c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8) []const u8 {
+    var len: usize = 0;
+    for (input_event.ncinput.eff_text) |raw_cp| {
+        if (raw_cp == 0) break;
+        const cp: u21 = std.math.cast(u21, raw_cp) orelse return "";
+        const cp_len = std.unicode.utf8Encode(cp, buf[len..]) catch return "";
+        len += cp_len;
+    }
+    return buf[0..len];
 }
 
 fn inputUtf8(input_event: InputEvent) []const u8 {

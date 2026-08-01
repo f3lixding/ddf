@@ -201,17 +201,12 @@ pub const Diff = struct {
     pub fn updateHighlights(self: *Diff) !bool {
         if (!try self.applyPendingHighlightResponses()) return false;
 
-        self.display_lines.clearRetainingCapacity();
-
-        const adjusted_width = self.width -| 2 -| self.line_number_width;
-
-        var gather_result: GatherResult = .{};
-        for (self.files) |file| {
-            gather_result.merge(try file.gatherDisplayLines(self.alloc, &self.display_lines, adjusted_width, self.line_number_width));
+        for (self.display_lines.items) |*display_line| {
+            const hunk = self.findHunk(display_line.hunk_id) orelse continue;
+            display_line.old_buf_hl_spans = hunk.old_buf_hl_spans;
+            display_line.new_buf_hl_spans = hunk.new_buf_hl_spans;
         }
 
-        self.widest = gather_result.widest +| self.line_number_width +| 2;
-        self.did_wrap = gather_result.did_wrap;
         return true;
     }
 
@@ -440,6 +435,7 @@ pub const Hunk = struct {
     ) !GatherResult {
         var result: GatherResult = .{};
 
+        const header_start = buf.items.len;
         result.merge(try gatherTextDisplayLines(
             alloc,
             buf,
@@ -454,11 +450,15 @@ pub const Hunk = struct {
             null,
             file_path,
         ));
+        for (buf.items[header_start..]) |*display_line| {
+            display_line.hunk_id = self.id;
+        }
 
         var old_buf_offset: usize = 0;
         var new_buf_offset: usize = 0;
 
         for (self.lines) |line| {
+            const line_start = buf.items.len;
             result.merge(try line.gatherDisplayLines(
                 alloc,
                 buf,
@@ -470,6 +470,9 @@ pub const Hunk = struct {
                 self.new_buf_hl_spans,
                 file_path,
             ));
+            for (buf.items[line_start..]) |*display_line| {
+                display_line.hunk_id = self.id;
+            }
         }
 
         return result;
