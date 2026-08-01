@@ -31,10 +31,9 @@ const State = union(enum) {
         first_display_line: usize,
         comment_rows: usize,
     } };
-
     normal,
     editing: EditState,
-    select: struct { usize, usize },
+    select,
 };
 
 state: State = .normal,
@@ -45,7 +44,6 @@ stderr: []u8,
 
 main_plane: ?*c.ncplane = null,
 sub_plane: ?*c.ncplane = null,
-indicator_plane: ?*c.ncplane = null,
 
 diff: ?Diff = null,
 line_indicator: ?LineIndicator = null,
@@ -177,7 +175,17 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
     const parse_start_ns = nowNs();
     const planes = try self.ensurePlane(render_ctx);
+    const main_plane = planes.main_plane;
     const sub_plane = planes.sub_plane;
+
+    const main_cols = c.ncplane_dim_x(main_plane);
+    self.line_indicator = try LineIndicator.init(render_ctx.nc_ctx, main_plane, .{
+        .y = 1,
+        .x = 1,
+        .height = 2,
+        .width = @max(@as(c_uint, 1), main_cols -| 2),
+    });
+
     self.diff = if (run_result.stdout.len == 0)
         null
     else blk: {
@@ -225,10 +233,6 @@ pub fn deinit(self: *Self) void {
         cursor.deinit();
     }
 
-    if (self.indicator_plane) |plane| {
-        _ = c.ncplane_destroy(plane);
-        self.indicator_plane = null;
-    }
     if (self.sub_plane) |plane| {
         _ = c.ncplane_destroy(plane);
         self.sub_plane = null;
@@ -260,6 +264,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 'j', c.NCKEY_DOWN => {
                     if (self.diff != null) {
                         if (self.moveFocusDown()) {
+                            try self.syncLineIndicatorToFocus();
                             self.display_dirty = true;
                         }
                     }
@@ -268,6 +273,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 'k', c.NCKEY_UP => {
                     if (self.diff != null) {
                         if (self.moveFocusUp()) {
+                            try self.syncLineIndicatorToFocus();
                             self.display_dirty = true;
                         }
                     }
@@ -277,6 +283,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     if (self.diff != null) {
                         if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
                             if (self.moveFocusPageUp()) {
+                                try self.syncLineIndicatorToFocus();
                                 self.display_dirty = true;
                             }
                         }
@@ -287,64 +294,23 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     if (self.diff != null) {
                         if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
                             if (self.moveFocusPageDown()) {
+                                try self.syncLineIndicatorToFocus();
                                 self.display_dirty = true;
                             }
                         }
                     }
                 },
 
+                'V' => {
+                    if (self.diff != null and self.line_indicator != null) {
+                        self.state = .select;
+                        self.line_indicator.?.enterVisualMode();
+                    }
+                },
+
                 'c', 'C' => {
                     if (self.diff != null) {
-                        const focused_line = self.display_lines.getPtr(self.focus_line) orelse return .Noop;
-
-                        switch (focused_line.*) {
-                            .diff => |*diff_display_line| {
-                                if (self.comments) |*comments| {
-                                    // here we are only considering one line since we got here via normal mode
-                                    const src_line_number: usize = if (diff_display_line.line.line_number) |line_number|
-                                        line_number.number
-                                    else
-                                        0;
-
-                                    const line_id: LineId = .{
-                                        .src_line_numbers = .{ src_line_number, null },
-                                        .file_path = diff_display_line.line.file_path orelse "no file path",
-                                        .display_rank = diff_display_line.stable_idx,
-                                        .kind = diff_display_line.line.kind,
-                                    };
-
-                                    // Here is what is happening since it might
-                                    // not be apparent to myself a few weeks
-                                    // later what goes on here:
-                                    // 1. Regardless of what the delta is in terms of displaylines, we move to the next focus line for editing. This could mean that we scroll on behalf of the user
-                                    // 2. Hide the LineIndicator
-                                    const comment = try comments.newComment(self.alloc, line_id);
-                                    const next_insertable_line_num = self.commentInsertIndexForFocusedDiff(diff_display_line.line);
-
-                                    const comment_x = self.commentBoxX();
-                                    const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
-                                    try comment.rebuildDisplayLines(self.alloc, comment_box_width);
-
-                                    for (comment.display_lines.items, 0..) |_, i| {
-                                        try self.display_lines.insert(next_insertable_line_num + i, .{ .comments = .{
-                                            .line_idx = i,
-                                            .comment = comment,
-                                        } });
-                                    }
-
-                                    self.state = .{ .editing = .{ .normal = .{
-                                        .first_display_line = next_insertable_line_num,
-                                        .comment = comment,
-                                    } } };
-
-                                    self.hideLineIndicator();
-                                    try self.syncEditingCursor();
-
-                                    self.display_dirty = true;
-                                }
-                            },
-                            .comments => {},
-                        }
+                        try self.startCommentFromDisplayRange(self.focus_line, self.focus_line);
                     }
                 },
 
@@ -371,6 +337,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                             }
                             self.state = .normal;
                             if (self.cursor) |*cursor| try cursor.hide();
+                            try self.syncLineIndicatorToFocus();
                         },
 
                         c.NCKEY_BACKSPACE, 127 => {
@@ -403,8 +370,69 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
             }
         },
 
-        .select => |range| {
-            _ = range;
+        .select => {
+            switch (input_event.key) {
+                c.NCKEY_ESC, 'V', '[' => {
+                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                        self.state = .normal;
+                        try self.syncLineIndicatorToFocus();
+                    }
+                },
+
+                'j', c.NCKEY_DOWN => {
+                    if (try self.moveSelectionFocus(.down)) {
+                        self.display_dirty = true;
+                    }
+                },
+
+                'k', c.NCKEY_UP => {
+                    if (try self.moveSelectionFocus(.up)) {
+                        self.display_dirty = true;
+                    }
+                },
+
+                'u', 'U' => {
+                    if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                        if (try self.moveSelectionFocus(.page_up)) {
+                            self.display_dirty = true;
+                        }
+                    }
+                },
+
+                'd', 'D' => {
+                    if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                        if (try self.moveSelectionFocus(.page_down)) {
+                            self.display_dirty = true;
+                        }
+                    }
+                },
+
+                'o' => {
+                    if (self.line_indicator) |*indicator| switch (indicator.state) {
+                        .visual => |*visual| {
+                            visual.focus_bound = if (visual.focus_bound == 0) 1 else 0;
+                            self.focus_line = self.top_line +| visual.range[visual.focus_bound] -| 1;
+                            indicator.pending_transition = true;
+                            indicator.gif.dirty = true;
+                            self.display_dirty = true;
+                        },
+                        else => {},
+                    };
+                },
+
+                'c', 'C' => {
+                    if (self.line_indicator) |indicator| switch (indicator.state) {
+                        .visual => |visual| {
+                            const start = self.top_line +| visual.range[0] -| 1;
+                            const end = self.top_line +| visual.range[1] -| 1;
+                            try self.startCommentFromDisplayRange(start, end);
+                        },
+                        else => {},
+                    };
+                },
+
+                else => {},
+            }
         },
     }
 
@@ -421,7 +449,6 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
 
     const main_plane = planes.main_plane;
     const sub_plane = planes.sub_plane;
-    const indicator_plane = planes.line_indicator_plane;
 
     const diff_dirty = if (self.diff) |diff| diff.isDirty() else false;
     const display_dirty = self.display_dirty or diff_dirty;
@@ -474,12 +501,8 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
 
     var indicator_render_ns: i128 = 0;
     const indicator_render_start_ns = nowNs();
-    if (indicator_plane) |plane| {
-        if (self.line_indicator) |*indicator| {
-            if (indicator.isDirty()) try indicator.render(render_ctx.nc_ctx);
-        } else if (display_dirty) {
-            c.ncplane_erase(plane);
-        }
+    if (self.line_indicator) |*indicator| {
+        if (indicator.isDirty()) try indicator.render(render_ctx.nc_ctx);
     }
     if (self.cursor) |*cursor| {
         if (cursor.isDirty()) try cursor.render(render_ctx.nc_ctx);
@@ -601,8 +624,77 @@ fn rebuildDisplayLinesWithComments(self: *Self) !void {
     }
 }
 
-fn commentInsertIndexForFocusedDiff(self: *Self, focused: *const diff_.DisplayLine) usize {
-    var idx = self.focus_line + 1;
+fn startCommentFromDisplayRange(self: *Self, start: usize, end: usize) !void {
+    const comments = &(self.comments orelse return);
+    const range_start = @min(start, end);
+    const range_end = @min(@max(start, end), self.display_lines.len() -| 1);
+
+    var first_line: ?*diff_.DisplayLine = null;
+    var first_src_line_number: usize = 0;
+    var last_line: ?*diff_.DisplayLine = null;
+    var last_src_line_number: usize = 0;
+    var last_display_line_idx: usize = range_start;
+    var last_stable_idx: usize = 0;
+
+    var idx = range_start;
+    while (idx <= range_end) : (idx += 1) {
+        const display_line = self.display_lines.getPtr(idx) orelse break;
+        switch (display_line.*) {
+            .diff => |*diff_display_line| {
+                const src_line_number = if (diff_display_line.line.line_number) |line_number|
+                    line_number.number
+                else
+                    continue;
+                if (src_line_number == 0) continue;
+
+                if (first_line == null) {
+                    first_line = diff_display_line.line;
+                    first_src_line_number = src_line_number;
+                }
+
+                last_line = diff_display_line.line;
+                last_src_line_number = src_line_number;
+                last_display_line_idx = idx;
+                last_stable_idx = diff_display_line.stable_idx;
+            },
+            .comments => {},
+        }
+    }
+
+    const closing_line = last_line orelse return;
+    const line_id: LineId = .{
+        .src_line_numbers = .{ first_src_line_number, if (first_src_line_number == last_src_line_number) null else last_src_line_number },
+        .file_path = closing_line.file_path orelse "no file path",
+        .display_rank = last_stable_idx,
+        .kind = closing_line.kind,
+    };
+
+    const comment = try comments.newComment(self.alloc, line_id);
+    const next_insertable_line_num = self.commentInsertIndexForDiffAt(last_display_line_idx, closing_line);
+
+    const comment_x = self.commentBoxX();
+    const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
+    try comment.rebuildDisplayLines(self.alloc, comment_box_width);
+
+    for (comment.display_lines.items, 0..) |_, i| {
+        try self.display_lines.insert(next_insertable_line_num + i, .{ .comments = .{
+            .line_idx = i,
+            .comment = comment,
+        } });
+    }
+
+    self.state = .{ .editing = .{ .normal = .{
+        .first_display_line = next_insertable_line_num,
+        .comment = comment,
+    } } };
+
+    self.hideLineIndicator();
+    try self.syncEditingCursor();
+    self.display_dirty = true;
+}
+
+fn commentInsertIndexForDiffAt(self: *Self, start_idx: usize, focused: *const diff_.DisplayLine) usize {
+    var idx = start_idx + 1;
     while (idx < self.display_lines.len()) : (idx += 1) {
         const line = self.display_lines.getPtr(idx) orelse return self.display_lines.len();
         switch (line.*) {
@@ -936,20 +1028,45 @@ fn keepFocusAtViewportRow(self: *Self, viewport_row: usize) void {
 
 fn hideLineIndicator(self: *Self) void {
     if (self.line_indicator) |*indicator| {
-        indicator.deinit();
-        self.line_indicator = null;
+        indicator.hide();
     }
+}
 
-    if (self.indicator_plane) |plane| {
-        _ = c.ncplane_destroy(plane);
-        self.indicator_plane = null;
-    }
+const SelectionDirection = enum { up, down, page_up, page_down };
+
+fn moveSelectionFocus(self: *Self, direction: SelectionDirection) !bool {
+    const indicator = &(self.line_indicator orelse return false);
+    const controlled_viewport_idx = indicator.currentControlledIndex() orelse return false;
+
+    const old_top_line = self.top_line;
+    self.focus_line = self.top_line +| controlled_viewport_idx -| 1;
+
+    const moved = switch (direction) {
+        .up => self.moveFocusUp(),
+        .down => self.moveFocusDown(),
+        .page_up => self.moveFocusPageUp(),
+        .page_down => self.moveFocusPageDown(),
+    };
+    if (!moved) return false;
+
+    const new_viewport_idx = self.focus_line -| self.top_line + 1;
+    const scroll_delta: isize = @as(isize, @intCast(old_top_line)) - @as(isize, @intCast(self.top_line));
+    indicator.setVisualControlledIndex(new_viewport_idx, scroll_delta);
+    indicator.unhide();
+    return true;
+}
+
+fn syncLineIndicatorToFocus(self: *Self) !void {
+    if (self.state == .editing) return;
+    const indicator = &(self.line_indicator orelse return);
+    const indicator_y: c_int = @intCast((self.focus_line -| if (self.diff != null) self.top_line else 0) + 1);
+    try indicator.move(indicator_y);
+    indicator.unhide();
 }
 
 fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     main_plane: *c.ncplane,
     sub_plane: *c.ncplane,
-    line_indicator_plane: ?*c.ncplane,
 } {
     const rows = @max(@as(c_uint, 1), render_ctx.term_rows);
     const cols = @max(@as(c_uint, 1), render_ctx.term_cols);
@@ -998,50 +1115,9 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     self.viewport_rows = @max(@as(usize, 1), @as(usize, @intCast(sub_rows)));
     self.viewport_cols = sub_cols;
 
-    if (self.state == .editing) {
-        self.hideLineIndicator();
-    } else {
-        const indicator_y: c_int = @intCast((self.focus_line -| if (self.diff != null) self.top_line else 0) + 1);
-        if (self.indicator_plane) |plane| {
-            const main_plane = self.main_plane.?;
-            const main_cols = c.ncplane_dim_x(main_plane);
-            if (c.ncplane_resize_simple(plane, 1, @max(@as(c_uint, 1), main_cols -| 2)) < 0) {
-                return error.ResizePlaneFailed;
-            }
-            if (c.ncplane_move_yx(plane, indicator_y, 1) < 0) {
-                return error.MovePlaneFailed;
-            }
-        } else {
-            const main_plane = self.main_plane.?;
-            const main_cols = c.ncplane_dim_x(main_plane);
-
-            var opts = std.mem.zeroes(c.ncplane_options);
-            opts.y = indicator_y;
-            opts.x = 1;
-            opts.rows = 1;
-            opts.cols = @max(@as(c_uint, 1), main_cols -| 2);
-            opts.name = "line_indicator_plane";
-
-            const plane = c.ncplane_create(main_plane, &opts) orelse return error.CreatePlaneFailed;
-            self.indicator_plane = plane;
-        }
-
-        if (self.line_indicator == null) {
-            self.line_indicator = try LineIndicator.init(render_ctx.nc_ctx, self.indicator_plane.?, .{
-                .y = 0,
-                .x = 0,
-                .height = 2,
-            });
-        } else if (self.line_indicator) |*indicator| {
-            try indicator.gif.move(0, 0);
-            indicator.unhide();
-        }
-    }
-
     return .{
         .sub_plane = self.sub_plane.?,
         .main_plane = self.main_plane.?,
-        .line_indicator_plane = self.indicator_plane,
     };
 }
 

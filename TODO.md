@@ -1,5 +1,4 @@
 # TODO
-- [ ] Visual mode (for selection)
 - [ ] Search / reverse search
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
@@ -7,6 +6,7 @@
 - [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
 - [ ] File picker (but only for files changed)
+- [ ] Log auto clean up / rotation
 - [ ] A proper readme
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Persistent config
@@ -15,6 +15,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Visual mode (for selection)
 - [x] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [x] Comments (this would likely need to be its own component)
     - [x] Comment input box title
