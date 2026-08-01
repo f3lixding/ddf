@@ -24,11 +24,16 @@ const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
 
 const State = union(enum) {
-    normal,
-    editing: struct {
+    pub const EditState = union(enum) { normal: struct {
         first_display_line: usize,
         comment: *Comments.Comment,
-    },
+    }, deletion: struct {
+        first_display_line: usize,
+        comment_rows: usize,
+    } };
+
+    normal,
+    editing: EditState,
     select: struct { usize, usize },
 };
 
@@ -350,10 +355,10 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                         } });
                                     }
 
-                                    self.state = .{ .editing = .{
+                                    self.state = .{ .editing = .{ .normal = .{
                                         .first_display_line = next_insertable_line_num,
                                         .comment = comment,
-                                    } };
+                                    } } };
 
                                     self.hideLineIndicator();
                                     try self.syncEditingCursor();
@@ -371,39 +376,54 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         },
 
         .editing => |editing_detail| {
-            const comment = editing_detail.comment;
+            switch (editing_detail) {
+                .normal => |editing| {
+                    const comment = editing.comment;
 
-            switch (input_event.key) {
-                c.NCKEY_ESC => {
-                    self.state = .normal;
-                    if (self.cursor) |*cursor| try cursor.hide();
-                    self.dirty = true;
-                },
+                    switch (input_event.key) {
+                        c.NCKEY_ESC => {
+                            if (comment.content.items.len == 0) {
+                                const comment_rows = self.commentDisplayLineCount(editing.first_display_line, comment);
+                                if (self.comments.?.removeComment(self.alloc, comment)) {
+                                    self.state = .{ .editing = .{ .deletion = .{
+                                        .first_display_line = editing.first_display_line,
+                                        .comment_rows = comment_rows,
+                                    } } };
+                                    try self.rebuildDisplayLinesAfterEditing();
+                                }
+                            }
+                            self.state = .normal;
+                            if (self.cursor) |*cursor| try cursor.hide();
+                            self.dirty = true;
+                        },
 
-                c.NCKEY_BACKSPACE, 127 => {
-                    if (comment.content.items.len > 0) {
-                        try comment.removeContent(lastUtf8CodepointLen(comment.content.items));
-                        try self.rebuildDisplayLinesAfterEditing();
+                        c.NCKEY_BACKSPACE, 127 => {
+                            if (comment.content.items.len > 0) {
+                                try comment.removeContent(util.lastUtf8CodepointLen(comment.content.items));
+                                try self.rebuildDisplayLinesAfterEditing();
+                            }
+                        },
+
+                        c.NCKEY_ENTER, '\n', '\r' => {
+                            try comment.appendContent(self.alloc, "\n");
+                            try self.rebuildDisplayLinesAfterEditing();
+                        },
+
+                        else => {
+                            const log = std.log.scoped(.diff_window);
+                            var text_buf: [util.input_text_buffer_len]u8 = undefined;
+                            const text = util.inputText(input_event.key, input_event.ncinput, &text_buf);
+                            if (util.isTextInput(text)) {
+                                try comment.appendContent(self.alloc, text);
+                                log.info("editing append text comment_ptr=0x{x} key={d} text_len={d} content_len={d} modifiers={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, input_event.ncinput.modifiers, text });
+                                try self.rebuildDisplayLinesAfterEditing();
+                            } else {
+                                log.info("editing ignored input comment_ptr=0x{x} key={d} text_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
+                            }
+                        },
                     }
                 },
-
-                c.NCKEY_ENTER, '\n', '\r' => {
-                    try comment.appendContent(self.alloc, "\n");
-                    try self.rebuildDisplayLinesAfterEditing();
-                },
-
-                else => {
-                    const log = std.log.scoped(.diff_window);
-                    var text_buf: [c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8 = undefined;
-                    const text = inputText(input_event, &text_buf);
-                    if (isTextInput(text)) {
-                        try comment.appendContent(self.alloc, text);
-                        log.info("editing append text comment_ptr=0x{x} key={d} text_len={d} content_len={d} modifiers={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, input_event.ncinput.modifiers, text });
-                        try self.rebuildDisplayLinesAfterEditing();
-                    } else {
-                        log.info("editing ignored input comment_ptr=0x{x} key={d} text_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
-                    }
-                },
+                .deletion => {},
             }
         },
 
@@ -515,7 +535,7 @@ fn renderVisibleDisplayLine(ctx: *RenderVisibleLinesCtx, line: *DisplayLine) !vo
         .comments => |*comment_line| {
             const comment_display_line = commentDisplayLine(comment_line.comment, comment_line.line_idx) orelse return;
             const content = comment_display_line.content;
-            log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, displayWidth(content), content });
+            log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, util.displayWidth(content), content });
 
             var rows: c_uint = 0;
             var cols: c_uint = 0;
@@ -533,7 +553,7 @@ fn renderVisibleDisplayLine(ctx: *RenderVisibleLinesCtx, line: *DisplayLine) !vo
             const clipped = util.clipToDisplayWidth(content, available_cols);
             if (clipped.len == 0) return;
 
-            putCommentSegment(ctx.sub_plane, @intCast(y), @intCast(x), clipped) catch |err| {
+            util.putEgcSegment(ctx.sub_plane, @intCast(y), @intCast(x), clipped) catch |err| {
                 log.err("comment render failed y={d} x={d} rows={d} cols={d} text_len={d} clipped_len={d} err={}", .{ y, x, rows, cols, content.len, clipped.len, err });
                 return err;
             };
@@ -630,49 +650,6 @@ fn optionalPathEql(a: ?[]const u8, b: ?[]const u8) bool {
     return std.mem.eql(u8, a.?, b.?);
 }
 
-fn putCommentSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !void {
-    if (text.len == 0 or y < 0 or x < 0) return;
-
-    var rows: c_uint = 0;
-    var cols: c_uint = 0;
-    c.ncplane_dim_yx(plane, &rows, &cols);
-
-    const uy: c_uint = @intCast(y);
-    if (uy >= rows) return;
-
-    var cx = x;
-    var i: usize = 0;
-    while (i < text.len) {
-        if (cx < 0) return;
-        const ux: c_uint = @intCast(cx);
-        if (ux + 1 >= cols) return;
-
-        const cp_len = utf8CodepointLen(text[i..]);
-        var egc_buf: [8:0]u8 = [_:0]u8{0} ** 8;
-        @memcpy(egc_buf[0..cp_len], text[i .. i + cp_len]);
-
-        var bytes_written: usize = 0;
-        const written = c.ncplane_putegc_yx(plane, y, cx, &egc_buf, &bytes_written);
-        if (written < 0) {
-            // Do not take down the app for a render clipping issue. The caller
-            // already clipped to the visible width, but notcurses can still
-            // reject some EGCs near the right edge.
-            return;
-        }
-
-        cx += @max(written, 1);
-        i += cp_len;
-    }
-}
-
-fn utf8CodepointLen(input: []const u8) usize {
-    std.debug.assert(input.len > 0);
-
-    const len = std.unicode.utf8ByteSequenceLength(input[0]) catch return 1;
-    if (len > input.len) return 1;
-    return len;
-}
-
 fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
     const log = std.log.scoped(.diff_window);
     const comment_x = self.commentBoxX();
@@ -681,7 +658,7 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
     try comment.rebuildDisplayLines(self.alloc, comment_box_width);
 
     for (comment.display_lines.items, 0..) |*comment_display_line, i| {
-        log.info("generated comment display line comment_ptr=0x{x} local_idx={d} targetable={} bytes={d} display_width={d} content='{s}'", .{ @intFromPtr(comment), i, comment_display_line.targetable, comment_display_line.content.len, displayWidth(comment_display_line.content), comment_display_line.content });
+        log.info("generated comment display line comment_ptr=0x{x} local_idx={d} targetable={} bytes={d} display_width={d} content='{s}'", .{ @intFromPtr(comment), i, comment_display_line.targetable, comment_display_line.content.len, util.displayWidth(comment_display_line.content), comment_display_line.content });
         try self.display_lines.append(.{ .comments = .{
             .line_idx = i,
             .comment = comment,
@@ -692,43 +669,56 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
 fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
     const log = std.log.scoped(.diff_window);
     const before_len = self.display_lines.len();
-    const editing = switch (self.state) {
+    const edit_state = switch (self.state) {
         .editing => |editing| editing,
         else => return,
     };
 
-    try self.patchDisplayLinesForEditedComment(editing.first_display_line, editing.comment);
+    try self.patchDisplayLinesForEditedComment(edit_state);
     log.info("patch after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.len() });
     try self.syncEditingCursor();
     self.dirty = true;
 }
 
-fn patchDisplayLinesForEditedComment(self: *Self, first_display_line: usize, comment: *Comments.Comment) !void {
-    const old_len = self.commentDisplayLineCount(first_display_line, comment);
+fn patchDisplayLinesForEditedComment(self: *Self, edit_state: State.EditState) !void {
+    switch (edit_state) {
+        .normal => |editing| {
+            const first_display_line = editing.first_display_line;
+            const comment = editing.comment;
 
-    const comment_x = self.commentBoxX();
-    const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
-    try comment.rebuildDisplayLines(self.alloc, comment_box_width);
-    const new_len = comment.display_lines.items.len;
+            const old_len = self.commentDisplayLineCount(first_display_line, comment);
 
-    const shared_len = @min(old_len, new_len);
-    for (0..shared_len) |i| {
-        const line = self.display_lines.getPtr(first_display_line + i) orelse return error.IndexNotFound;
-        line.* = .{ .comments = .{
-            .line_idx = i,
-            .comment = comment,
-        } };
-    }
+            const comment_x = self.commentBoxX();
+            const comment_box_width = @max(@as(c_uint, 2), self.viewport_cols -| comment_x -| 1);
+            try comment.rebuildDisplayLines(self.alloc, comment_box_width);
+            const new_len = comment.display_lines.items.len;
 
-    if (new_len > old_len) {
-        for (old_len..new_len) |i| {
-            try self.display_lines.insert(first_display_line + i, .{ .comments = .{
-                .line_idx = i,
-                .comment = comment,
-            } });
-        }
-    } else if (new_len < old_len) {
-        try self.display_lines.removeFromIndexRange(self.alloc, first_display_line + new_len, first_display_line + old_len - 1);
+            const shared_len = @min(old_len, new_len);
+            for (0..shared_len) |i| {
+                const line = self.display_lines.getPtr(first_display_line + i) orelse return error.IndexNotFound;
+                line.* = .{ .comments = .{
+                    .line_idx = i,
+                    .comment = comment,
+                } };
+            }
+
+            if (new_len > old_len) {
+                for (old_len..new_len) |i| {
+                    try self.display_lines.insert(first_display_line + i, .{ .comments = .{
+                        .line_idx = i,
+                        .comment = comment,
+                    } });
+                }
+            } else if (new_len < old_len) {
+                try self.display_lines.removeFromIndexRange(self.alloc, first_display_line + new_len, first_display_line + old_len - 1);
+            }
+        },
+
+        .deletion => |deletion| {
+            const first_display_line = deletion.first_display_line;
+            const comment_height = deletion.comment_rows;
+            try self.display_lines.removeFromIndexRange(self.alloc, first_display_line, first_display_line + comment_height - 1);
+        },
     }
 }
 
@@ -751,9 +741,17 @@ fn commentDisplayLineCount(self: *Self, first_display_line: usize, comment: *con
 }
 
 fn syncEditingCursor(self: *Self) !void {
-    const editing = switch (self.state) {
+    const edit_state = switch (self.state) {
         .editing => |editing| editing,
         else => return,
+    };
+
+    const editing = switch (edit_state) {
+        .normal => |editing| editing,
+        .deletion => {
+            if (self.cursor) |*cursor| try cursor.hide();
+            return;
+        },
     };
 
     const log = std.log.scoped(.diff_window);
@@ -832,63 +830,6 @@ fn commentEndColumn(self: *const Self, comment: *const Comments.Comment) c_uint 
 fn commentDisplayLine(comment: *Comments.Comment, idx: usize) ?*Comments.DisplayLine {
     if (idx >= comment.display_lines.items.len) return null;
     return &comment.display_lines.items[idx];
-}
-
-fn displayWidth(content: []const u8) c_uint {
-    return util.wrapLine(content, std.math.maxInt(c_uint)).display_width;
-}
-
-fn inputText(input_event: InputEvent, buf: *[c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8) []const u8 {
-    const effective_text = effectiveInputText(input_event, buf);
-    if (isTextInput(effective_text)) return effective_text;
-
-    // Without effective text, continue to ignore shortcut-style modified keys.
-    if ((input_event.ncinput.modifiers & (c.NCKEY_MOD_CTRL | c.NCKEY_MOD_ALT)) != 0) return "";
-
-    if (input_event.key >= 0x20 and input_event.key <= 0x7e) {
-        buf[0] = @intCast(input_event.key);
-        return buf[0..1];
-    }
-
-    return inputUtf8(input_event);
-}
-
-fn effectiveInputText(input_event: InputEvent, buf: *[c.NCINPUT_MAX_EFF_TEXT_CODEPOINTS * 4]u8) []const u8 {
-    var len: usize = 0;
-    for (input_event.ncinput.eff_text) |raw_cp| {
-        if (raw_cp == 0) break;
-        const cp: u21 = std.math.cast(u21, raw_cp) orelse return "";
-        const cp_len = std.unicode.utf8Encode(cp, buf[len..]) catch return "";
-        len += cp_len;
-    }
-    return buf[0..len];
-}
-
-fn inputUtf8(input_event: InputEvent) []const u8 {
-    const raw = input_event.ncinput.utf8[0..];
-    return std.mem.sliceTo(raw, 0);
-}
-
-fn isTextInput(text: []const u8) bool {
-    if (text.len == 0) return false;
-
-    // Do not append C0/DEL controls. Printable ASCII is handled from
-    // input_event.key before we trust ncinput.utf8 because notcurses can report
-    // stale/control bytes there for ordinary keypresses on this path.
-    if (text.len == 1 and (text[0] < 0x20 or text[0] == 0x7f)) return false;
-
-    return std.unicode.utf8ValidateSlice(text);
-}
-
-fn lastUtf8CodepointLen(content: []const u8) usize {
-    if (content.len == 0) return 0;
-
-    var idx = content.len - 1;
-    while (idx > 0 and (content[idx] & 0b1100_0000) == 0b1000_0000) {
-        idx -= 1;
-    }
-
-    return content.len - idx;
 }
 
 fn commentBoxX(self: *const Self) c_uint {

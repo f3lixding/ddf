@@ -10,8 +10,15 @@ pub const c = @import("c.zig").c;
 pub const Spsc = spsc.Spsc;
 
 pub const WrapLineResult = text.WrapLineResult;
+pub const input_text_buffer_len = text.input_text_buffer_len;
 pub const wrapLine = text.wrapLine;
 pub const clipToDisplayWidth = text.clipToDisplayWidth;
+pub const displayWidth = text.displayWidth;
+pub const inputText = text.inputText;
+pub const isTextInput = text.isTextInput;
+pub const lastUtf8CodepointLen = text.lastUtf8CodepointLen;
+pub const putEgcSegment = text.putEgcSegment;
+pub const utf8CodepointLen = text.utf8CodepointLen;
 
 pub const makePlaneTransparent = plane.makePlaneTransparent;
 
