@@ -171,7 +171,10 @@ pub fn FenwickTreeStorage(comptime T: type) type {
         }
 
         /// End is inclusive. If end is null, removes only start.
-        pub fn removeFromIndexRange(self: *Self, alloc: std.mem.Allocator, start: usize, end: ?usize) !void {
+        ///
+        /// Returns the removed items in their original order. The caller owns
+        /// the returned slice and must free it with `alloc`.
+        pub fn removeFromIndexRange(self: *Self, alloc: std.mem.Allocator, start: usize, end: ?usize) ![]T {
             const end_idx = end orelse start;
             if (end_idx < start) return error.InvalidRange;
 
@@ -183,6 +186,10 @@ pub fn FenwickTreeStorage(comptime T: type) type {
             const end_blk_idx = end_blk_find.blk_idx;
             const end_blk_local_idx = end_blk_find.local_idx;
 
+            var removed: std.ArrayList(T) = .empty;
+            errdefer removed.deinit(alloc);
+            try removed.ensureTotalCapacity(alloc, end_idx - start + 1);
+
             var blocks_to_remove: std.ArrayList(usize) = .empty;
             defer blocks_to_remove.deinit(alloc);
 
@@ -191,6 +198,8 @@ pub fn FenwickTreeStorage(comptime T: type) type {
                 const local_end_idx = if (block_idx == end_blk_idx) end_blk_local_idx + 1 else block.inner.items.len;
 
                 if (local_start_idx == local_end_idx) continue;
+
+                try removed.appendSlice(alloc, block.inner.items[local_start_idx..local_end_idx]);
 
                 if (local_start_idx == 0 and local_end_idx == block.inner.items.len) {
                     block.deinit(self.alloc);
@@ -205,6 +214,7 @@ pub fn FenwickTreeStorage(comptime T: type) type {
             }
 
             try self.rebuildTree();
+            return try removed.toOwnedSlice(alloc);
         }
 
         /// End here is inclusive
@@ -318,8 +328,10 @@ test "FenwickTreeStorage remove single index" {
 
     for (0..6) |i| try storage.append(i);
 
-    try storage.removeFromIndexRange(std.testing.allocator, 2, null);
+    const removed = try storage.removeFromIndexRange(std.testing.allocator, 2, null);
+    defer std.testing.allocator.free(removed);
 
+    try std.testing.expectEqualSlices(usize, &.{2}, removed);
     try expectFlat(&storage, &.{ 0, 1, 3, 4, 5 });
     try std.testing.expectEqualSlices(usize, &.{ 2, 5 }, storage.tree.items);
 }
@@ -331,8 +343,10 @@ test "FenwickTreeStorage remove range within one block" {
 
     for (0..5) |i| try storage.append(i);
 
-    try storage.removeFromIndexRange(std.testing.allocator, 1, 3);
+    const removed = try storage.removeFromIndexRange(std.testing.allocator, 1, 3);
+    defer std.testing.allocator.free(removed);
 
+    try std.testing.expectEqualSlices(usize, &.{ 1, 2, 3 }, removed);
     try expectFlat(&storage, &.{ 0, 4 });
     try std.testing.expectEqualSlices(usize, &.{2}, storage.tree.items);
 }
@@ -344,8 +358,10 @@ test "FenwickTreeStorage remove range across blocks" {
 
     for (0..10) |i| try storage.append(i);
 
-    try storage.removeFromIndexRange(std.testing.allocator, 4, 7);
+    const removed = try storage.removeFromIndexRange(std.testing.allocator, 4, 7);
+    defer std.testing.allocator.free(removed);
 
+    try std.testing.expectEqualSlices(usize, &.{ 4, 5, 6, 7 }, removed);
     try expectFlat(&storage, &.{ 0, 1, 2, 3, 8, 9 });
     try std.testing.expectEqualSlices(usize, &.{ 3, 4, 1, 6 }, storage.tree.items);
 }
@@ -357,8 +373,10 @@ test "FenwickTreeStorage remove whole blocks" {
 
     for (0..9) |i| try storage.append(i);
 
-    try storage.removeFromIndexRange(std.testing.allocator, 3, 8);
+    const removed = try storage.removeFromIndexRange(std.testing.allocator, 3, 8);
+    defer std.testing.allocator.free(removed);
 
+    try std.testing.expectEqualSlices(usize, &.{ 3, 4, 5, 6, 7, 8 }, removed);
     try expectFlat(&storage, &.{ 0, 1, 2 });
     try std.testing.expectEqualSlices(usize, &.{3}, storage.tree.items);
 }

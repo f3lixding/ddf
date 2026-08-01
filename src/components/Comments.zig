@@ -230,17 +230,19 @@ pub fn newComment(self: *Self, alloc: std.mem.Allocator, line_id: LineId) !*Comm
 }
 
 pub fn removeComment(self: *Self, alloc: std.mem.Allocator, comment_to_delete: *const Comment) bool {
-    const line_id = &comment_to_delete.line_id;
+    const line_id = comment_to_delete.line_id;
 
-    if (self.comments.getPtr(line_id.*)) |comments| {
+    if (self.comments.getPtr(line_id)) |comments| {
         for (comments.items, 0..) |comment, idx| {
             if (comment_to_delete == comment) {
                 comment.deinit(alloc);
                 alloc.destroy(comment);
                 _ = comments.orderedRemove(idx);
 
-                if (comments.items.len == 0)
-                    _ = self.comments.remove(line_id.*);
+                if (comments.items.len == 0) {
+                    comments.deinit(alloc);
+                    _ = self.comments.remove(line_id);
+                }
 
                 return true;
             }

@@ -1,7 +1,7 @@
 # TODO
 - [ ] Comments (this would likely need to be its own component)
-    - [ ] Auto retraction of empty comments after exiting comment editing
     - [ ] Comment input box title
+    - [x] Auto retraction of empty comments after exiting comment editing
     - [x] Insertion of characters that require modifiers (like question mark)
     - [x] New line behavior difference between tmux and native
     - [x] Cursor (and perhaps line indicator) alternate display inside tmux

@@ -710,14 +710,16 @@ fn patchDisplayLinesForEditedComment(self: *Self, edit_state: State.EditState) !
                     } });
                 }
             } else if (new_len < old_len) {
-                try self.display_lines.removeFromIndexRange(self.alloc, first_display_line + new_len, first_display_line + old_len - 1);
+                const removed = try self.display_lines.removeFromIndexRange(self.alloc, first_display_line + new_len, first_display_line + old_len - 1);
+                defer self.alloc.free(removed);
             }
         },
 
         .deletion => |deletion| {
             const first_display_line = deletion.first_display_line;
             const comment_height = deletion.comment_rows;
-            try self.display_lines.removeFromIndexRange(self.alloc, first_display_line, first_display_line + comment_height - 1);
+            const removed = try self.display_lines.removeFromIndexRange(self.alloc, first_display_line, first_display_line + comment_height - 1);
+            defer self.alloc.free(removed);
         },
     }
 }
