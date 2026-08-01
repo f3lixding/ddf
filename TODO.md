@@ -1,17 +1,4 @@
 # TODO
-- [ ] Comments (this would likely need to be its own component)
-    - [ ] Comment input box title
-    - [x] Auto retraction of empty comments after exiting comment editing
-    - [x] Insertion of characters that require modifiers (like question mark)
-    - [x] New line behavior difference between tmux and native
-    - [x] Cursor (and perhaps line indicator) alternate display inside tmux
-    - [x] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
-    - [x] Better auto scrolling after insertion of new lines 
-    - [x] Differentiate line kind while commenting
-    - [x] Rendering during scrolling
-    - [x] Rendering during editing (this would involve cursor)
-    - [x] Init from DiffWindow init
-    - [x] Comments component
 - [ ] Finer dirty resolution (diff component has a lot of subcomponent and not all of them needs to be redrawn each frame)
 - [ ] Visual mode (for selection)
 - [ ] Search / reverse search
@@ -29,6 +16,19 @@
 - [ ] Distribution
 
 # DONE
+- [x] Comments (this would likely need to be its own component)
+    - [x] Comment input box title
+    - [x] Auto retraction of empty comments after exiting comment editing
+    - [x] Insertion of characters that require modifiers (like question mark)
+    - [x] New line behavior difference between tmux and native
+    - [x] Cursor (and perhaps line indicator) alternate display inside tmux
+    - [x] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
+    - [x] Better auto scrolling after insertion of new lines 
+    - [x] Differentiate line kind while commenting
+    - [x] Rendering during scrolling
+    - [x] Rendering during editing (this would involve cursor)
+    - [x] Init from DiffWindow init
+    - [x] Comments component
 - [x] Fenwick tree refactor
 - [x] Customized render for file / hunk metadata
 - [x] Patch notcurses for tmux on macos build

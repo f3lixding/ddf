@@ -85,9 +85,17 @@ pub const Comment = struct {
 
         const total_width: usize = @intCast(width);
         const inner_width = total_width - 2;
+        const range_start = self.line_id.src_line_numbers.@"0";
+        const range_end = self.line_id.src_line_numbers.@"1";
+
+        var title_buf: [64]u8 = undefined;
+        const title = if (range_end) |end|
+            try std.fmt.bufPrint(&title_buf, " L{d} - L{d} ", .{ range_start, end })
+        else
+            try std.fmt.bufPrint(&title_buf, " L{d} ", .{range_start});
 
         try buf.append(alloc, .{
-            .content = try borderLine(alloc, "┌", "─", "┐", inner_width),
+            .content = try borderLine(alloc, "┌", "─", "┐", inner_width, title),
             .comment_id = self.comment_id,
             .targetable = false,
         });
@@ -128,7 +136,7 @@ pub const Comment = struct {
         }
 
         try buf.append(alloc, .{
-            .content = try borderLine(alloc, "└", "─", "┘", inner_width),
+            .content = try borderLine(alloc, "└", "─", "┘", inner_width, null),
             .comment_id = self.comment_id,
             .targetable = false,
         });
@@ -140,12 +148,25 @@ pub const Comment = struct {
         fill: []const u8,
         right: []const u8,
         inner_width: usize,
+        title: ?[]const u8,
     ) ![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
         errdefer buf.deinit(alloc);
 
         try buf.appendSlice(alloc, left);
-        for (0..inner_width) |_| try buf.appendSlice(alloc, fill);
+
+        if (title) |title_text| {
+            const clipped_title = util.clipToDisplayWidth(title_text, inner_width);
+            try buf.appendSlice(alloc, clipped_title);
+
+            const title_width = displayWidth(clipped_title);
+            if (title_width < inner_width) {
+                for (0..inner_width - title_width) |_| try buf.appendSlice(alloc, fill);
+            }
+        } else {
+            for (0..inner_width) |_| try buf.appendSlice(alloc, fill);
+        }
+
         try buf.appendSlice(alloc, right);
 
         return try buf.toOwnedSlice(alloc);
