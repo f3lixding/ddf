@@ -19,6 +19,7 @@ const Comments = @import("Comments.zig");
 const Cursor = @import("Cursor.zig");
 
 const Self = @This();
+const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
 
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
 
@@ -53,7 +54,7 @@ viewport_cols: c_uint = 0,
 pending_resize: bool = false,
 dirty: bool = true,
 
-display_lines: std.ArrayList(DisplayLine) = .empty,
+display_lines: DisplayLineStorage,
 
 /// This is analogous to the DisplayLine to the subcomponents to this component
 /// (i.e. Diff and Comments). They are references to their respective
@@ -163,6 +164,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
     var self: Self = .{
         .alloc = alloc,
+        .display_lines = .{ .alloc = alloc },
         .output = run_result.stdout,
         .stderr = run_result.stderr,
     };
@@ -176,17 +178,12 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
         const sub_plane_width = c.ncplane_dim_x(sub_plane);
         const diff = try Diff.init(alloc, io, run_result.stdout, sub_plane_width);
 
-        var dw_display_lines: std.ArrayList(DisplayLine) = .empty;
-        errdefer dw_display_lines.deinit(alloc);
-
         for (diff.display_lines.items, 0..) |*diff_display_lines, original_idx| {
-            try dw_display_lines.append(alloc, .{ .diff = .{
+            try self.display_lines.append(.{ .diff = .{
                 .line = diff_display_lines,
                 .stable_idx = original_idx,
             } });
         }
-
-        self.display_lines = dw_display_lines;
 
         break :blk diff;
     };
@@ -235,7 +232,7 @@ pub fn deinit(self: *Self) void {
         self.main_plane = null;
     }
 
-    self.display_lines.deinit(self.alloc);
+    self.display_lines.deinit();
     self.alloc.free(self.output);
     self.alloc.free(self.stderr);
 }
@@ -292,7 +289,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
 
                 'c', 'C' => {
                     if (self.diff != null) {
-                        const focused_line = &self.display_lines.items[self.focus_line];
+                        const focused_line = self.display_lines.getPtr(self.focus_line) orelse return .Noop;
 
                         switch (focused_line.*) {
                             .diff => |*diff_display_line| {
@@ -320,10 +317,13 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                         // we'll take that of the closing half, if any
                                         const focus_src_line_num = line_id.src_line_numbers.@"1" orelse line_id.src_line_numbers.@"0";
 
-                                        if (self.focus_line + 1 >= self.display_lines.items.len) {
+                                        const display_line_count = self.display_lines.len();
+                                        if (self.focus_line + 1 >= display_line_count) {
                                             break :blk self.focus_line + 1;
                                         } else {
-                                            for (self.display_lines.items[self.focus_line + 1 ..], self.focus_line + 1..) |*line, idx| {
+                                            var idx = self.focus_line + 1;
+                                            while (idx < display_line_count) : (idx += 1) {
+                                                const line = self.display_lines.getPtr(idx) orelse break :blk display_line_count;
                                                 switch (line.*) {
                                                     .diff => |diff| {
                                                         if (diff.line.line_number) |line_number| {
@@ -334,7 +334,8 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                                     },
                                                     else => {},
                                                 }
-                                            } else break :blk self.display_lines.items.len;
+                                            }
+                                            break :blk display_line_count;
                                         }
                                     };
 
@@ -344,7 +345,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                                     try comment.toDisplayLines(self.alloc, comment_box_width, &comments.display_lines);
 
                                     for (comments.display_lines.items[start..], 0..) |_, i| {
-                                        try self.display_lines.insert(self.alloc, next_insertable_line_num + i, .{ .comments = .{
+                                        try self.display_lines.insert(next_insertable_line_num + i, .{ .comments = .{
                                             .line_idx = start + i,
                                             .comment = comment,
                                         } });
@@ -452,41 +453,22 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         const diff_render_start_ns = nowNs();
         c.ncplane_erase(sub_plane);
 
-        const start = @min(self.top_line, self.display_lines.items.len);
-        const visible_count = @min(self.viewport_rows, self.display_lines.items.len - start);
+        const display_line_count = self.display_lines.len();
+        const start = @min(self.top_line, display_line_count);
+        const visible_count = @min(self.viewport_rows, display_line_count - start);
 
-        for (self.display_lines.items[start .. start + visible_count], 0..) |*line, viewport_row| {
-            switch (line.*) {
-                .diff => |*diff_line| {
-                    try diff_line.line.render(render_ctx.nc_ctx, sub_plane, @intCast(viewport_row));
-                },
-                .comments => |*comment_line| {
-                    const comment_display_line = self.commentDisplayLine(comment_line.line_idx) orelse continue;
-                    const content = comment_display_line.content;
-                    log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, displayWidth(content), content });
-
-                    var rows: c_uint = 0;
-                    var cols: c_uint = 0;
-                    c.ncplane_dim_yx(sub_plane, &rows, &cols);
-
-                    const y: c_uint = @intCast(viewport_row);
-                    const x = self.commentBoxX();
-                    if (y >= rows or x >= cols) continue;
-
-                    // Avoid writing into the final terminal column. Some
-                    // terminals/notcurses paths reject UTF-8 EGCs there.
-                    const available_cols: usize = cols -| x -| 1;
-                    if (available_cols == 0) continue;
-
-                    const clipped = util.clipToDisplayWidth(content, available_cols);
-                    if (clipped.len == 0) continue;
-
-                    putCommentSegment(sub_plane, @intCast(y), @intCast(x), clipped) catch |err| {
-                        log.err("comment render failed y={d} x={d} rows={d} cols={d} text_len={d} clipped_len={d} err={}", .{ y, x, rows, cols, content.len, clipped.len, err });
-                        return err;
-                    };
-                },
-            }
+        if (visible_count > 0) {
+            var render_lines_ctx: RenderVisibleLinesCtx = .{
+                .self = self,
+                .nc_ctx = render_ctx.nc_ctx,
+                .sub_plane = sub_plane,
+            };
+            try self.display_lines.performActionOnRange(
+                start,
+                start + visible_count - 1,
+                renderVisibleDisplayLine,
+                &render_lines_ctx,
+            );
         }
 
         diff_render_ns = nowNs() - diff_render_start_ns;
@@ -523,6 +505,51 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     });
 }
 
+const RenderVisibleLinesCtx = struct {
+    self: *Self,
+    nc_ctx: *c.notcurses,
+    sub_plane: *c.ncplane,
+    viewport_row: usize = 0,
+};
+
+fn renderVisibleDisplayLine(ctx: *RenderVisibleLinesCtx, line: *DisplayLine) !void {
+    const log = std.log.scoped(.diff_window);
+    const viewport_row = ctx.viewport_row;
+    defer ctx.viewport_row += 1;
+
+    switch (line.*) {
+        .diff => |*diff_line| {
+            try diff_line.line.render(ctx.nc_ctx, ctx.sub_plane, @intCast(viewport_row));
+        },
+        .comments => |*comment_line| {
+            const comment_display_line = ctx.self.commentDisplayLine(comment_line.line_idx) orelse return;
+            const content = comment_display_line.content;
+            log.debug("render comment line viewport_row={d} comment_ptr=0x{x} targetable={} bytes={d} display_width={d} content='{s}'", .{ viewport_row, @intFromPtr(comment_line.comment), comment_display_line.targetable, content.len, displayWidth(content), content });
+
+            var rows: c_uint = 0;
+            var cols: c_uint = 0;
+            c.ncplane_dim_yx(ctx.sub_plane, &rows, &cols);
+
+            const y: c_uint = @intCast(viewport_row);
+            const x = ctx.self.commentBoxX();
+            if (y >= rows or x >= cols) return;
+
+            // Avoid writing into the final terminal column. Some
+            // terminals/notcurses paths reject UTF-8 EGCs there.
+            const available_cols: usize = cols -| x -| 1;
+            if (available_cols == 0) return;
+
+            const clipped = util.clipToDisplayWidth(content, available_cols);
+            if (clipped.len == 0) return;
+
+            putCommentSegment(ctx.sub_plane, @intCast(y), @intCast(x), clipped) catch |err| {
+                log.err("comment render failed y={d} x={d} rows={d} cols={d} text_len={d} clipped_len={d} err={}", .{ y, x, rows, cols, content.len, clipped.len, err });
+                return err;
+            };
+        },
+    }
+}
+
 pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclusion {
     if (self.pending_resize) {
         _ = try self.ensurePlane(render_ctx);
@@ -553,19 +580,6 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
     return .Noop;
 }
 
-// 1. find corresponding display lines in comments
-// 2. find corresponding display lines in diffwindow
-// 3. rebuild the display lines for the comment
-// 4. if there are equal number of display lines after, we simply replace both
-// 5. if there are more / fewer, we insert / remove accordingly
-// fn rebuildDisplayLineForCommentEdit(self: *Self, comment: *Comments.Comment) !void {
-//     const comments = &(self.comments orelse return);
-//     const comment_id = comment.comment_id;
-//
-//
-//     // const comments_dl = comments.display_lines
-// }
-
 fn rebuildDisplayLinesWithComments(self: *Self) !void {
     const diff = &(self.diff orelse return);
 
@@ -574,7 +588,7 @@ fn rebuildDisplayLinesWithComments(self: *Self) !void {
     } else null;
     defer if (maybe_comments) |comments| self.alloc.free(comments);
 
-    self.display_lines.clearAndFree(self.alloc);
+    self.display_lines.clearAndFree();
     if (self.comments) |*comments| {
         for (comments.display_lines.items) |*display_line| {
             display_line.deinit(self.alloc);
@@ -584,7 +598,7 @@ fn rebuildDisplayLinesWithComments(self: *Self) !void {
 
     var comment_idx: usize = 0;
     for (diff.display_lines.items, 0..) |*line_from_diff, stable_idx| {
-        try self.display_lines.append(self.alloc, .{ .diff = .{
+        try self.display_lines.append(.{ .diff = .{
             .line = line_from_diff,
             .stable_idx = stable_idx,
         } });
@@ -687,7 +701,7 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
 
     for (comments.display_lines.items[start..], 0..) |*comment_display_line, i| {
         log.info("generated comment display line comment_ptr=0x{x} local_idx={d} targetable={} bytes={d} display_width={d} content='{s}'", .{ @intFromPtr(comment), i, comment_display_line.targetable, comment_display_line.content.len, displayWidth(comment_display_line.content), comment_display_line.content });
-        try self.display_lines.append(self.alloc, .{ .comments = .{
+        try self.display_lines.append(.{ .comments = .{
             .line_idx = start + i,
             .comment = comment,
         } });
@@ -696,10 +710,10 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
 
 fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
     const log = std.log.scoped(.diff_window);
-    const before_len = self.display_lines.items.len;
+    const before_len = self.display_lines.len();
     if (self.diff != null) {
         try self.rebuildDisplayLinesWithComments();
-        log.info("rebuild after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.items.len });
+        log.info("rebuild after editing display_lines before={d} after={d}", .{ before_len, self.display_lines.len() });
         try self.syncEditingCursor();
         self.dirty = true;
     }
@@ -725,12 +739,13 @@ fn syncEditingCursor(self: *Self) !void {
     }
 }
 
-fn lastEditableDisplayLineForComment(self: *const Self, start_from: usize, comment: *const Comments.Comment) ?usize {
+fn lastEditableDisplayLineForComment(self: *Self, start_from: usize, comment: *const Comments.Comment) ?usize {
     var result: ?usize = null;
     var idx = start_from;
 
-    while (idx < self.display_lines.items.len) : (idx += 1) {
-        switch (self.display_lines.items[idx]) {
+    while (idx < self.display_lines.len()) : (idx += 1) {
+        const line = self.display_lines.getPtr(idx) orelse break;
+        switch (line.*) {
             .comments => |comment_line| {
                 if (comment_line.comment != comment) break;
                 const comment_display_line = self.commentDisplayLine(comment_line.line_idx) orelse break;
@@ -836,14 +851,14 @@ fn nsToMs(ns: i128) f64 {
 }
 
 fn moveFocusDown(self: *Self) bool {
-    if (self.focus_line + 1 >= self.display_lines.items.len) return false;
+    if (self.focus_line + 1 >= self.display_lines.len()) return false;
 
     const margin = @min(@as(usize, 5), self.viewport_rows -| 1);
     const viewport_row = self.focus_line -| self.top_line;
     const bottom_margin_row = self.viewport_rows -| 1 -| margin;
 
     self.focus_line += 1;
-    if (viewport_row >= bottom_margin_row and self.top_line + self.viewport_rows < self.display_lines.items.len) {
+    if (viewport_row >= bottom_margin_row and self.top_line + self.viewport_rows < self.display_lines.len()) {
         self.top_line += 1;
     }
 
@@ -874,10 +889,10 @@ fn moveFocusPageUp(self: *Self) bool {
 }
 
 fn moveFocusPageDown(self: *Self) bool {
-    if (self.focus_line + 1 >= self.display_lines.items.len) return false;
+    if (self.focus_line + 1 >= self.display_lines.len()) return false;
 
     const viewport_row = self.focus_line -| self.top_line;
-    self.focus_line = @min(self.focus_line + pageScrollAmount(self), self.display_lines.items.len - 1);
+    self.focus_line = @min(self.focus_line + pageScrollAmount(self), self.display_lines.len() - 1);
     self.keepFocusAtViewportRow(viewport_row);
     return true;
 }
@@ -887,7 +902,7 @@ fn pageScrollAmount(self: *const Self) usize {
 }
 
 fn keepFocusAtViewportRow(self: *Self, viewport_row: usize) void {
-    const max_top = self.display_lines.items.len -| self.viewport_rows;
+    const max_top = self.display_lines.len() -| self.viewport_rows;
     self.top_line = @min(self.focus_line -| viewport_row, max_top);
 }
 

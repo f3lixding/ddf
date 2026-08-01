@@ -60,8 +60,6 @@ fn removeInnerRange(
 /// blocks)
 pub fn FenwickTreeStorage(comptime T: type) type {
     return struct {
-        pub const Callback = *const fn (anytype, *T) anyerror!void;
-
         const Self = @This();
 
         alloc: std.mem.Allocator,
@@ -74,7 +72,7 @@ pub fn FenwickTreeStorage(comptime T: type) type {
             const block_to_operate = blk: {
                 if (self.blocks.items.len == 0) {
                     try self.blocks.append(self.alloc, .{});
-                    try self.tree.append(self.alloc, 0);
+                    try self.tree.append(self.alloc, self.calculateTreeValueAtBlkIdx(self.blocks.items.len - 1));
                     break :blk &self.blocks.items[0];
                 } else {
                     const block = &self.blocks.items[self.blocks.items.len - 1];
@@ -106,6 +104,8 @@ pub fn FenwickTreeStorage(comptime T: type) type {
         }
 
         pub fn addAtIdx(self: *Self, index: usize, item: T) !void {
+            if (index == self.len()) return try self.append(item);
+
             const find_res = self.findBlockFromIndex(index) orelse return error.IndexNotFound;
 
             const block = find_res.block;
@@ -114,6 +114,23 @@ pub fn FenwickTreeStorage(comptime T: type) type {
 
             try block.inner.insert(self.alloc, local_idx, item);
             self.update(blk_idx, 1);
+        }
+
+        pub fn len(self: *const Self) usize {
+            var sum: usize = 0;
+            for (self.blocks.items) |block| {
+                sum += block.height();
+            }
+            return sum;
+        }
+
+        pub fn getPtr(self: *Self, flat_idx: usize) ?*T {
+            const find_res = self.findBlockFromIndex(flat_idx) orelse return null;
+            return &find_res.block.inner.items[find_res.local_idx];
+        }
+
+        pub fn insert(self: *Self, index: usize, item: T) !void {
+            try self.addAtIdx(index, item);
         }
 
         fn findBlockFromIndex(self: *Self, flat_idx: usize) ?struct {
@@ -192,10 +209,10 @@ pub fn FenwickTreeStorage(comptime T: type) type {
 
         /// End here is inclusive
         pub fn performActionOnRange(
-            self: Self,
+            self: *Self,
             start: usize,
             end: ?usize,
-            callback: Callback,
+            callback: anytype,
             ctx: anytype,
         ) !void {
             const start_blk_find = self.findBlockFromIndex(start) orelse return error.IndexNotFound;
@@ -205,7 +222,7 @@ pub fn FenwickTreeStorage(comptime T: type) type {
 
             if (end == null) {
                 const item = &start_block.inner.items[start_blk_local_idx];
-                @call(.always_inline, callback, .{ ctx, item });
+                try @call(.always_inline, callback, .{ ctx, item });
                 return;
             }
 
@@ -219,7 +236,7 @@ pub fn FenwickTreeStorage(comptime T: type) type {
                 const local_end_idx = if (i == end_blk_idx) end_blk_local_idx + 1 else block.inner.items.len;
 
                 for (block.inner.items[local_start_idx..local_end_idx]) |*item| {
-                    @call(.always_inline, callback, .{ ctx, item });
+                    try @call(.always_inline, callback, .{ ctx, item });
                 }
             }
         }
@@ -230,6 +247,22 @@ pub fn FenwickTreeStorage(comptime T: type) type {
             }
             self.blocks.clearRetainingCapacity();
             self.tree.clearRetainingCapacity();
+        }
+
+        pub fn clearAndFree(self: *Self) void {
+            for (self.blocks.items) |*block| {
+                block.deinit(self.alloc);
+            }
+            self.blocks.clearAndFree(self.alloc);
+            self.tree.clearAndFree(self.alloc);
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.blocks.items) |*block| {
+                block.deinit(self.alloc);
+            }
+            self.blocks.deinit(self.alloc);
+            self.tree.deinit(self.alloc);
         }
 
         fn rebuildTree(self: *Self) !void {
