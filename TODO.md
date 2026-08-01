@@ -1,12 +1,11 @@
 # TODO
-- [ ] Fenwick tree refactor
 - [ ] Comments (this would likely need to be its own component)
-    - [ ] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
     - [ ] New line behavior difference between tmux and native
     - [ ] Insertion of characters that require modifiers (like question mark)
     - [ ] Auto retraction of empty comments after exiting comment editing
     - [ ] Comment input box title
     - [ ] Cursor (and perhaps line indicator) alternate display inside tmux
+    - [x] Partial rebuild of DisplayLine (as opposed to complete rebuild) during comment edit
     - [x] Better auto scrolling after insertion of new lines 
     - [x] Differentiate line kind while commenting
     - [x] Rendering during scrolling
@@ -26,6 +25,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Fenwick tree refactor
 - [x] Customized render for file / hunk metadata
 - [x] Patch notcurses for tmux on macos build
 - [x] Put file and lines deleted / added on top line of border
