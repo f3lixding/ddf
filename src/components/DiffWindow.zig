@@ -17,6 +17,7 @@ const Diff = diff_.Diff;
 const LineIndicator = @import("LineIndicator.zig");
 const Comments = @import("Comments.zig");
 const Cursor = @import("Cursor.zig");
+const DetailBar = @import("DetailBar.zig");
 
 const Self = @This();
 const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
@@ -31,9 +32,12 @@ const State = union(enum) {
         first_display_line: usize,
         comment_rows: usize,
     } };
+
     normal,
     editing: EditState,
     select,
+    search,
+    seek,
 };
 
 state: State = .normal,
@@ -49,6 +53,7 @@ diff: ?Diff = null,
 line_indicator: ?LineIndicator = null,
 comments: ?Comments = null,
 cursor: ?Cursor = null,
+detail_bar: ?DetailBar = null,
 
 top_line: usize = 0,
 focus_line: usize = 0,
@@ -100,8 +105,9 @@ pub fn initInterface(self: *Self) Component {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     if (self_typed.display_dirty) return true;
                     if (self_typed.diff) |diff| if (diff.isDirty()) return true;
-                    if (self_typed.line_indicator) |*indicator| return indicator.isDirty();
-                    if (self_typed.cursor) |*cursor| return cursor.isDirty();
+                    if (self_typed.line_indicator) |*indicator| if (indicator.isDirty()) return true;
+                    if (self_typed.cursor) |*cursor| if (cursor.isDirty()) return true;
+                    if (self_typed.detail_bar) |*bar| if (bar.isDirty()) return true;
                     return false;
                 }
             }.isDirty,
@@ -206,6 +212,12 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
     self.cursor = try .init(render_ctx.nc_ctx, sub_plane, .{ .height = 2 });
 
+    self.detail_bar = try .init(main_plane, .{
+        .height = 1,
+        .width = main_cols,
+        .y = @intCast(render_ctx.term_rows -| 1),
+    });
+
     const parse_ns = nowNs() - parse_start_ns;
 
     log.info("DiffWindow.init profile: total_ms={d:.3} command_ms={d:.3} diff_init_ms={d:.3}", .{
@@ -232,6 +244,9 @@ pub fn deinit(self: *Self) void {
     if (self.cursor) |*cursor| {
         cursor.deinit();
     }
+    if (self.detail_bar) |*bar| {
+        bar.deinit(self.alloc);
+    }
 
     if (self.sub_plane) |plane| {
         _ = c.ncplane_destroy(plane);
@@ -248,6 +263,10 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
+    defer if (self.detail_bar) |*bar| {
+        bar.setMode(self.alloc, detailBarMode(self.state));
+    };
+
     // Special casing universal events
     if (input_event.key == c.NCKEY_RESIZE) {
         self.pending_resize = true;
@@ -311,6 +330,21 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 'c', 'C' => {
                     if (self.diff != null) {
                         try self.startCommentFromDisplayRange(self.focus_line, self.focus_line);
+                    }
+                },
+
+                '/' => {
+                    if (self.detail_bar) |*bar| {
+                        bar.setMode(self.alloc, .search);
+                        self.state = .search;
+                    }
+                },
+
+                '?' => {
+                    if (self.detail_bar) |*bar| {
+                        bar.setMode(self.alloc, .search);
+                        bar.flipSearchDirection();
+                        self.state = .search;
                     }
                 },
 
@@ -434,6 +468,62 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 else => {},
             }
         },
+
+        .search => {
+            switch (input_event.key) {
+                c.NCKEY_ESC, '[' => {
+                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                        self.state = .normal;
+                        try self.syncLineIndicatorToFocus();
+                    }
+                },
+
+                c.NCKEY_ENTER, '\n', '\r' => {
+                    const query = self.detail_bar.?.conclude() orelse return .Noop;
+                    if (query.result == .found) {
+                        self.state = .seek;
+                    } else if (self.detail_bar) |*bar| {
+                        bar.setSearchResult(false);
+                    }
+                },
+
+                c.NCKEY_BACKSPACE, 127 => {
+                    try self.detail_bar.?.modifySearchQuery(self.alloc, .delete_single);
+                    _ = try self.searchFromDetailBar(null);
+                },
+
+                else => {
+                    var text_buf: [util.input_text_buffer_len]u8 = undefined;
+                    const text = util.inputText(input_event.key, input_event.ncinput, &text_buf);
+                    if (util.isTextInput(text)) {
+                        try self.detail_bar.?.modifySearchQuery(self.alloc, .{ .add_multiple = text });
+                        _ = try self.searchFromDetailBar(null);
+                    }
+                },
+            }
+        },
+
+        .seek => {
+            switch (input_event.key) {
+                c.NCKEY_ESC, 'q', '[' => {
+                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
+                        self.state = .normal;
+                        try self.syncLineIndicatorToFocus();
+                    }
+                },
+
+                'n', 'N' => {
+                    _ = try self.searchFromDetailBar(null);
+                },
+
+                'p', 'P' => {
+                    const query = self.detail_bar.?.conclude() orelse return .Noop;
+                    _ = try self.searchFromDetailBar(oppositeSearchDirection(query.dir));
+                },
+
+                else => {},
+            }
+        },
     }
 
     return .Noop;
@@ -460,7 +550,7 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
             diff.fileNameForDisplayLine(self.focus_line)
         else
             null;
-        try drawBorder(main_plane, active_file_name);
+        try drawBorder(main_plane, active_file_name, 1);
         border_ns = nowNs() - border_start_ns;
     }
 
@@ -507,6 +597,9 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
     if (self.cursor) |*cursor| {
         if (cursor.isDirty()) try cursor.render(render_ctx.nc_ctx);
     }
+    if (self.detail_bar) |*bar| {
+        if (bar.isDirty()) try bar.render(render_ctx.nc_ctx);
+    }
     indicator_render_ns = nowNs() - indicator_render_start_ns;
 
     self.display_dirty = false;
@@ -519,6 +612,110 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         nsToMs(diff_render_ns),
         nsToMs(indicator_render_ns),
     });
+}
+
+fn searchFromDetailBar(self: *Self, override_dir: ?DetailBar.Query.SearchDirection) !bool {
+    const bar = &(self.detail_bar orelse return false);
+    const query = bar.conclude() orelse return false;
+    if (query.query.items.len == 0) return false;
+
+    const dir = override_dir orelse query.dir;
+    const hit = self.findSearchHit(query.query.items, dir) orelse {
+        bar.setSearchResult(false);
+        return false;
+    };
+    bar.setSearchResult(true);
+    self.focus_line = hit;
+    self.scrollFocusIntoView();
+    try self.syncLineIndicatorToFocus();
+    self.display_dirty = true;
+    return true;
+}
+
+fn findSearchHit(self: *Self, needle: []const u8, dir: DetailBar.Query.SearchDirection) ?usize {
+    if (needle.len == 0) return null;
+
+    return switch (dir) {
+        .down => self.findSearchHitDown(needle),
+        .up => self.findSearchHitUp(needle),
+    };
+}
+
+fn findSearchHitDown(self: *Self, needle: []const u8) ?usize {
+    const line_count = self.display_lines.len();
+    if (line_count == 0) return null;
+
+    var idx = @min(self.focus_line +| 1, line_count);
+    while (idx < line_count) : (idx += 1) {
+        if (self.displayLineContains(idx, needle)) return idx;
+    }
+
+    idx = 0;
+    while (idx <= self.focus_line and idx < line_count) : (idx += 1) {
+        if (self.displayLineContains(idx, needle)) return idx;
+    }
+
+    return null;
+}
+
+fn findSearchHitUp(self: *Self, needle: []const u8) ?usize {
+    const line_count = self.display_lines.len();
+    if (line_count == 0) return null;
+
+    var idx = self.focus_line;
+    while (idx > 0) {
+        idx -= 1;
+        if (self.displayLineContains(idx, needle)) return idx;
+    }
+
+    idx = line_count;
+    while (idx > self.focus_line + 1) {
+        idx -= 1;
+        if (self.displayLineContains(idx, needle)) return idx;
+    }
+
+    return null;
+}
+
+fn displayLineContains(self: *Self, idx: usize, needle: []const u8) bool {
+    const line = self.display_lines.getPtr(idx) orelse return false;
+    const haystack = switch (line.*) {
+        .diff => |diff_line| diff_line.line.text,
+        .comments => |comment_line| blk: {
+            const comment_display_line = commentDisplayLine(comment_line.comment, comment_line.line_idx) orelse return false;
+            break :blk comment_display_line.content;
+        },
+    };
+
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+fn scrollFocusIntoView(self: *Self) void {
+    if (self.focus_line < self.top_line) {
+        self.top_line = self.focus_line;
+        return;
+    }
+
+    const bottom = self.top_line +| self.viewport_rows;
+    if (self.focus_line >= bottom) {
+        self.top_line = self.focus_line -| self.viewport_rows +| 2;
+    }
+}
+
+fn oppositeSearchDirection(dir: DetailBar.Query.SearchDirection) DetailBar.Query.SearchDirection {
+    return switch (dir) {
+        .down => .up,
+        .up => .down,
+    };
+}
+
+fn detailBarMode(state: State) DetailBar.Mode {
+    return switch (state) {
+        .normal => .normal,
+        .editing => .comment,
+        .select => .select,
+        .search, .seek => .search,
+    };
 }
 
 const RenderVisibleLinesCtx = struct {
@@ -578,6 +775,10 @@ pub fn update(self: *Self, ft: FrameTime, render_ctx: *const RenderCtx) !Conclus
                 try self.syncEditingCursor();
                 self.display_dirty = true;
             }
+        }
+
+        if (self.detail_bar) |*bar| {
+            try bar.update(self.main_plane.?);
         }
     } else if (self.diff) |*diff| {
         _ = try diff.updateHighlights();
@@ -1091,7 +1292,8 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
         self.main_plane = plane;
     }
 
-    const sub_rows = if (rows >= 2) rows - 2 else rows;
+    // 1 for the border, 1 for the detail bar
+    const sub_rows = if (rows >= 3) rows - 3 else rows;
     const sub_cols = if (cols >= 4) cols - 4 else cols;
     if (self.sub_plane) |plane| {
         if (c.ncplane_resize_simple(plane, sub_rows, sub_cols) < 0) {
@@ -1121,7 +1323,7 @@ fn ensurePlane(self: *Self, render_ctx: *const RenderCtx) !struct {
     };
 }
 
-fn drawBorder(plane: *c.ncplane, active_file_name: ?[]const u8) !void {
+fn drawBorder(plane: *c.ncplane, active_file_name: ?[]const u8, space_to_leave_at_bottom: usize) !void {
     c.ncplane_erase(plane);
 
     var rows: c_uint = 0;
@@ -1129,7 +1331,7 @@ fn drawBorder(plane: *c.ncplane, active_file_name: ?[]const u8) !void {
     c.ncplane_dim_yx(plane, &rows, &cols);
     if (rows < 2 or cols < 2) return;
 
-    const last_y: c_int = @intCast(rows - 1);
+    const last_y: c_int = @intCast(rows - space_to_leave_at_bottom - 1);
     const last_x: c_int = @intCast(cols - 1);
 
     c.ncplane_set_styles(plane, c.NCSTYLE_BOLD);

@@ -148,9 +148,11 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent, render_ctx: *const
 
     switch (key) {
         'q' => return .Quit,
+
         c.NCKEY_RESIZE => {
             self.initial_render_done = false;
         },
+
         else => {
             const input_slice = self.input_bucket.insertAndReport(input_event) catch retry: {
                 self.input_bucket.clear();
