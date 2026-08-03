@@ -130,10 +130,14 @@ test "core loop" {
     const fake_nc_ctx: *c.notcurses = @ptrFromInt(1);
 
     const input_source = struct {
+        var sent = std.atomic.Value(bool).init(false);
+
         fn getInputNblockFake(nc_ctx: *c.notcurses, input: *c.ncinput) u32 {
             _ = nc_ctx;
             _ = input;
-            return 'o';
+
+            if (!sent.swap(true, .monotonic)) return 'o';
+            return 0;
         }
     }.getInputNblockFake;
 
@@ -148,5 +152,5 @@ test "core loop" {
     var rx = channel.rx;
     const res = try rx.recv(io);
 
-    std.debug.assert(res.key == 'o');
+    try std.testing.expectEqual(@as(u32, 'o'), res.key);
 }

@@ -144,6 +144,19 @@ pub fn LeakyBucket(comptime T: type) type {
         pub fn clear(self: *Self) void {
             self.head = self.tail;
         }
+
+        /// Leak the first N elements.
+        /// Equivalent to clear if N >= current effective buffer length.
+        pub fn evictN(self: *Self, n: usize) void {
+            const is_wrapped = self.tail < self.head;
+            const cur_len = if (is_wrapped) BUF_LEN - self.head + self.tail else self.tail - self.head;
+
+            if (n >= cur_len) {
+                self.head = self.tail;
+            } else {
+                self.head = (self.head + n) % BUF_LEN;
+            }
+        }
     };
 }
 
@@ -242,4 +255,150 @@ test "leaky bucket reports buffer full" {
     }
 
     try std.testing.expectError(error.BufferFull, bucket.insertAndReport(.{ .timestamp = 24 }));
+}
+
+test "leaky bucket evictN removes zero elements" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 0, .value = 'a' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 1, .value = 'b' });
+    bucket.evictN(0);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 2, .value = 'c' });
+
+    try std.testing.expectEqual(@as(usize, 3), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'a'), reported.first[0].value);
+    try std.testing.expectEqual(@as(u8, 'b'), reported.first[1].value);
+    try std.testing.expectEqual(@as(u8, 'c'), reported.first[2].value);
+}
+
+test "leaky bucket evictN removes multiple non-wrapped elements" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 0, .value = 'a' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 1, .value = 'b' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 2, .value = 'c' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 3, .value = 'd' });
+    bucket.evictN(2);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 4, .value = 'e' });
+
+    try std.testing.expectEqual(@as(usize, 3), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'c'), reported.first[0].value);
+    try std.testing.expectEqual(@as(u8, 'd'), reported.first[1].value);
+    try std.testing.expectEqual(@as(u8, 'e'), reported.first[2].value);
+}
+
+test "leaky bucket evictN clears when count reaches current length" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 0, .value = 'a' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 1, .value = 'b' });
+    bucket.evictN(2);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 2, .value = 'c' });
+
+    try std.testing.expectEqual(@as(usize, 1), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'c'), reported.first[0].value);
+}
+
+test "leaky bucket evictN clears when count exceeds current length" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 0, .value = 'a' });
+    _ = try bucket.insertAndReport(.{ .timestamp = 1, .value = 'b' });
+    bucket.evictN(99);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 2, .value = 'c' });
+
+    try std.testing.expectEqual(@as(usize, 1), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'c'), reported.first[0].value);
+}
+
+test "leaky bucket evictN removes wrapped elements before wrap point" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    for (0..23) |idx| {
+        _ = try bucket.insertAndReport(.{ .timestamp = @intCast(idx), .value = @intCast(idx) });
+    }
+    bucket.clear();
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 1000, .value = 'a' }); // index 23
+    _ = try bucket.insertAndReport(.{ .timestamp = 1001, .value = 'b' }); // index 24
+    _ = try bucket.insertAndReport(.{ .timestamp = 1002, .value = 'c' }); // index 0
+    _ = try bucket.insertAndReport(.{ .timestamp = 1003, .value = 'd' }); // index 1
+    _ = try bucket.insertAndReport(.{ .timestamp = 1004, .value = 'e' }); // index 2
+
+    bucket.evictN(1);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 1005, .value = 'f' }); // index 3
+
+    try std.testing.expectEqual(@as(usize, 1), reported.first.len);
+    try std.testing.expectEqual(@as(u8, 'b'), reported.first[0].value);
+
+    const second = reported.second orelse return error.ExpectedSecondSlice;
+    try std.testing.expectEqual(@as(usize, 4), second.len);
+    try std.testing.expectEqual(@as(u8, 'c'), second[0].value);
+    try std.testing.expectEqual(@as(u8, 'd'), second[1].value);
+    try std.testing.expectEqual(@as(u8, 'e'), second[2].value);
+    try std.testing.expectEqual(@as(u8, 'f'), second[3].value);
+}
+
+test "leaky bucket evictN removes wrapped elements across wrap point" {
+    const Event = struct {
+        timestamp: i64,
+        value: u8,
+    };
+    const Bucket = LeakyBucket(Event);
+
+    var bucket = Bucket.init(.{ .debounce = 10_000 });
+
+    for (0..23) |idx| {
+        _ = try bucket.insertAndReport(.{ .timestamp = @intCast(idx), .value = @intCast(idx) });
+    }
+    bucket.clear();
+
+    _ = try bucket.insertAndReport(.{ .timestamp = 1000, .value = 'a' }); // index 23
+    _ = try bucket.insertAndReport(.{ .timestamp = 1001, .value = 'b' }); // index 24
+    _ = try bucket.insertAndReport(.{ .timestamp = 1002, .value = 'c' }); // index 0
+    _ = try bucket.insertAndReport(.{ .timestamp = 1003, .value = 'd' }); // index 1
+    _ = try bucket.insertAndReport(.{ .timestamp = 1004, .value = 'e' }); // index 2
+
+    bucket.evictN(3);
+    const reported = try bucket.insertAndReport(.{ .timestamp = 1005, .value = 'f' }); // index 3
+
+    try std.testing.expectEqual(@as(usize, 3), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'd'), reported.first[0].value);
+    try std.testing.expectEqual(@as(u8, 'e'), reported.first[1].value);
+    try std.testing.expectEqual(@as(u8, 'f'), reported.first[2].value);
 }

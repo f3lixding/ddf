@@ -1,0 +1,226 @@
+const std = @import("std");
+
+const LeakyBucket = @import("leaky_bucket.zig").LeakyBucket;
+
+pub fn ParseResult(comptime CommandType: type) type {
+    return struct {
+        command: CommandType,
+        consumed: usize,
+    };
+}
+
+/// Use this to define your own input parser by supplying your own keymap
+pub fn KeymapSink(
+    comptime ContextType: type,
+    comptime InputEventType: type,
+    comptime CommandType: type,
+) type {
+    return struct {
+        pub const Bucket = LeakyBucket(InputEventType);
+        pub const Opts = Bucket.Opts;
+        pub const Result = ParseResult(CommandType);
+        pub const ParsingFn = *const fn (ContextType, Bucket.Slice.Iterator) ?Result;
+
+        const Self = @This();
+
+        parsing_fn: ParsingFn,
+        bucket: Bucket,
+        ctx: ContextType,
+
+        pub fn init(
+            ctx: ContextType,
+            parsing_fn: ParsingFn,
+            bucket_opts: Opts,
+        ) Self {
+            return .{
+                .parsing_fn = parsing_fn,
+                .bucket = Bucket.init(bucket_opts),
+                .ctx = ctx,
+            };
+        }
+
+        pub fn processForPotentialHit(self: *Self, input_event: InputEventType) !?CommandType {
+            const slice = try self.bucket.insertAndReport(input_event);
+            const iter = slice.iterator();
+
+            if (self.parsing_fn(self.ctx, iter)) |res| {
+                self.bucket.evictN(res.consumed);
+                return res.command;
+            }
+
+            return null;
+        }
+    };
+}
+
+pub const KeyChord = struct {
+    key: u32,
+    mods: u32,
+
+    pub const SingleContext = struct {
+        pub fn hash(_: SingleContext, chord: KeyChord) u64 {
+            var h = std.hash.Wyhash.init(0);
+
+            std.hash.autoHash(&h, chord.key);
+            std.hash.autoHash(&h, chord.mods);
+
+            return h.final();
+        }
+
+        pub fn eql(_: SingleContext, a: KeyChord, b: KeyChord) bool {
+            return a.key == b.key and a.mods == b.mods;
+        }
+    };
+
+    pub const SequenceContext = struct {
+        pub fn hash(_: SequenceContext, sequence: []const KeyChord) u64 {
+            var h = std.hash.Wyhash.init(0);
+            std.hash.autoHash(&h, sequence.len);
+
+            for (sequence) |seq| {
+                std.hash.autoHash(&h, seq.key);
+                std.hash.autoHash(&h, seq.mods);
+            }
+
+            return h.final();
+        }
+
+        pub fn eql(_: SequenceContext, a: []const KeyChord, b: []const KeyChord) bool {
+            if (a.len != b.len) return false;
+
+            for (a, b) |a_, b_| {
+                if (a_.key != b_.key) return false;
+                if (a_.mods != b_.mods) return false;
+            }
+
+            return true;
+        }
+    };
+};
+
+test "keymap sink returns command and evicts consumed events" {
+    const Event = struct {
+        timestamp: i64,
+        key: u8,
+    };
+    const Command = enum { open };
+    const Sink = KeymapSink(void, Event, Command);
+    const Parser = struct {
+        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
+            var iter = iter_arg;
+            var matched: usize = 0;
+
+            while (iter.next()) |event| {
+                if (matched == 0 and event.key == 'a') {
+                    matched = 1;
+                    continue;
+                }
+
+                if (matched == 1 and event.key == 'b') {
+                    return .{ .command = .open, .consumed = 2 };
+                }
+
+                matched = 0;
+            }
+
+            return null;
+        }
+    };
+
+    var sink = Sink.init({}, Parser.parse, .{ .debounce = 10_000 });
+
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'a' }));
+    try std.testing.expectEqual(Command.open, (try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'b' })).?);
+
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 2, .key = 'c' }));
+    const reported = try sink.bucket.insertAndReport(.{ .timestamp = 3, .key = 'd' });
+
+    try std.testing.expectEqual(@as(usize, 2), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'c'), reported.first[0].key);
+    try std.testing.expectEqual(@as(u8, 'd'), reported.first[1].key);
+}
+
+test "keymap sink keeps events when parser misses" {
+    const Event = struct {
+        timestamp: i64,
+        key: u8,
+    };
+    const Command = enum { open };
+    const Sink = KeymapSink(void, Event, Command);
+    const Parser = struct {
+        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
+            var iter = iter_arg;
+            while (iter.next()) |event| {
+                if (event.key == 'z') return .{ .command = .open, .consumed = 1 };
+            }
+            return null;
+        }
+    };
+
+    var sink = Sink.init({}, Parser.parse, .{ .debounce = 10_000 });
+
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'x' }));
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'y' }));
+    const reported = try sink.bucket.insertAndReport(.{ .timestamp = 2, .key = 'w' });
+
+    try std.testing.expectEqual(@as(usize, 3), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'x'), reported.first[0].key);
+    try std.testing.expectEqual(@as(u8, 'y'), reported.first[1].key);
+    try std.testing.expectEqual(@as(u8, 'w'), reported.first[2].key);
+}
+
+test "keymap sink evicts consumed events from wrapped bucket" {
+    const Event = struct {
+        timestamp: i64,
+        key: u8,
+    };
+    const Command = enum { open };
+    const Sink = KeymapSink(void, Event, Command);
+    const Parser = struct {
+        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
+            var iter = iter_arg;
+            var matched: usize = 0;
+
+            while (iter.next()) |event| {
+                if (matched == 0 and event.key == 'a') {
+                    matched = 1;
+                    continue;
+                }
+
+                if (matched == 1 and event.key == 'b') {
+                    matched = 2;
+                    continue;
+                }
+
+                if (matched == 2 and event.key == 'c') {
+                    return .{ .command = .open, .consumed = 3 };
+                }
+
+                matched = 0;
+            }
+
+            return null;
+        }
+    };
+
+    var sink = Sink.init({}, Parser.parse, .{ .debounce = 10_000 });
+
+    for (0..23) |idx| {
+        _ = try sink.bucket.insertAndReport(.{ .timestamp = @intCast(idx), .key = @intCast(idx) });
+    }
+    sink.bucket.clear();
+
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1000, .key = 'a' })); // index 23
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1001, .key = 'b' })); // index 24
+    try std.testing.expectEqual(Command.open, (try sink.processForPotentialHit(.{ .timestamp = 1002, .key = 'c' })).?); // index 0
+
+    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1003, .key = 'd' }));
+    const reported = try sink.bucket.insertAndReport(.{ .timestamp = 1004, .key = 'e' });
+
+    try std.testing.expectEqual(@as(usize, 2), reported.first.len);
+    try std.testing.expectEqual(@as(?[]Event, null), reported.second);
+    try std.testing.expectEqual(@as(u8, 'd'), reported.first[0].key);
+    try std.testing.expectEqual(@as(u8, 'e'), reported.first[1].key);
+}

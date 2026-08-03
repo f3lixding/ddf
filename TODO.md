@@ -1,6 +1,9 @@
 # TODO
 - [ ] Add shortcut for centering the focus line (we will probably need an leaky bucket for this)
-- [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml)
+    - [ ] Double stage input processing pipeline
+    - [ ] Refactor handleInput on Component interface
+    - [ ] Add registerKeymap on Component interface
+- [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml / zon)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Context expansion
 - [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)

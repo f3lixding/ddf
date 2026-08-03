@@ -21,6 +21,8 @@ const DetailBar = @import("DetailBar.zig");
 
 const Self = @This();
 const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
+const KeymapSink = util.KeymapSink(KeymapSinkCtx, InputEvent, Command);
+const KeyChord = util.KeyChord;
 
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
 
@@ -40,7 +42,97 @@ const State = union(enum) {
     seek,
 };
 
-state: State = .normal,
+const CommandKind = enum {
+    dismount,
+    resize,
+
+    move_up,
+    move_down,
+    move_page_up,
+    move_page_down,
+    move_selection_up,
+    move_selection_down,
+    move_selection_page_up,
+    move_selection_page_down,
+
+    goto_top,
+    goto_bottom,
+    center_focus,
+
+    enter_select,
+    exit_to_normal,
+    toggle_selection_bound,
+
+    start_comment_at_focus,
+    start_comment_at_selection,
+
+    start_search_up,
+    start_search_down,
+    accept_search,
+    search_delete_char,
+    search_add_text,
+
+    repeat_search,
+    repeat_search_opposite,
+
+    finish_editing,
+    edit_delete_char,
+    edit_add_newline,
+    edit_add_text,
+};
+
+const Command = union(CommandKind) {
+    dismount,
+    resize,
+
+    move_up,
+    move_down,
+    move_page_up,
+    move_page_down,
+    move_selection_up,
+    move_selection_down,
+    move_selection_page_up,
+    move_selection_page_down,
+
+    goto_top,
+    goto_bottom,
+    center_focus,
+
+    enter_select,
+    exit_to_normal,
+    toggle_selection_bound,
+
+    start_comment_at_focus,
+    start_comment_at_selection,
+
+    start_search_up,
+    start_search_down,
+    accept_search,
+    search_delete_char,
+    search_add_text: []const u8,
+
+    repeat_search,
+    repeat_search_opposite,
+
+    finish_editing,
+    edit_delete_char,
+    edit_add_newline,
+    edit_add_text: []const u8,
+};
+
+const Keymaps = std.HashMap(
+    []const KeyChord,
+    CommandKind,
+    KeyChord.SequenceContext,
+    std.hash_map.default_max_load_percentage,
+);
+
+const KeymapSinkCtx = struct {
+    state: *const State,
+    keymap: Keymaps,
+};
+
+state: *State,
 
 alloc: std.mem.Allocator,
 output: []u8,
@@ -61,6 +153,7 @@ viewport_rows: usize = 1,
 viewport_cols: c_uint = 0,
 pending_resize: bool = false,
 display_dirty: bool = true,
+keymap_sink: KeymapSink,
 
 display_lines: DisplayLineStorage,
 
@@ -172,11 +265,41 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
         return error.DiffCommandFailed;
     }
 
+    const state = try alloc.create(State);
+    state.* = .normal;
+    const keymapsink_ctx = KeymapSinkCtx{
+        .state = state,
+        .keymap = blk: {
+            const map: Keymaps = .init(alloc);
+
+            break :blk map;
+        },
+    };
+
     var self: Self = .{
         .alloc = alloc,
+        .state = state,
         .display_lines = .{ .alloc = alloc },
         .output = run_result.stdout,
         .stderr = run_result.stderr,
+        .keymap_sink = .init(keymapsink_ctx, struct {
+            pub fn parse(ctx: KeymapSinkCtx, iter: Bucket.Slice.Iterator) ?KeymapSink.Result {
+                const keymap = &ctx.keymap;
+                _ = keymap;
+                _ = iter;
+                const component_state = ctx.state;
+
+                switch (component_state.*) {
+                    .normal => {},
+                    .editing => {},
+                    .select => {},
+                    .search => {},
+                    .seek => {},
+                }
+
+                return null;
+            }
+        }.parse, .{}),
     };
 
     const parse_start_ns = nowNs();
@@ -260,6 +383,7 @@ pub fn deinit(self: *Self) void {
     self.display_lines.deinit();
     self.alloc.free(self.output);
     self.alloc.free(self.stderr);
+    self.alloc.destroy(self.state);
 }
 
 pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
@@ -275,7 +399,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         return .Noop;
     }
 
-    switch (self.state) {
+    switch (self.state.*) {
         .normal => {
             switch (input_event.key) {
                 'q', c.NCKEY_ESC => return .Dismount,
@@ -322,7 +446,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
 
                 'V' => {
                     if (self.diff != null and self.line_indicator != null) {
-                        self.state = .select;
+                        self.state.* = .select;
                         self.line_indicator.?.enterVisualMode();
                     }
                 },
@@ -336,7 +460,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 '/' => {
                     if (self.detail_bar) |*bar| {
                         bar.setMode(self.alloc, .search);
-                        self.state = .search;
+                        self.state.* = .search;
                     }
                 },
 
@@ -344,7 +468,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                     if (self.detail_bar) |*bar| {
                         bar.setMode(self.alloc, .search);
                         bar.flipSearchDirection();
-                        self.state = .search;
+                        self.state.* = .search;
                     }
                 },
 
@@ -362,14 +486,14 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                             if (comment.content.items.len == 0) {
                                 const comment_rows = self.commentDisplayLineCount(editing.first_display_line, comment);
                                 if (self.comments.?.removeComment(self.alloc, comment)) {
-                                    self.state = .{ .editing = .{ .deletion = .{
+                                    self.state.* = .{ .editing = .{ .deletion = .{
                                         .first_display_line = editing.first_display_line,
                                         .comment_rows = comment_rows,
                                     } } };
                                     try self.rebuildDisplayLinesAfterEditing();
                                 }
                             }
-                            self.state = .normal;
+                            self.state.* = .normal;
                             if (self.cursor) |*cursor| try cursor.hide();
                             try self.syncLineIndicatorToFocus();
                         },
@@ -408,7 +532,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
             switch (input_event.key) {
                 c.NCKEY_ESC, 'V', '[' => {
                     if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state = .normal;
+                        self.state.* = .normal;
                         try self.syncLineIndicatorToFocus();
                     }
                 },
@@ -473,7 +597,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
             switch (input_event.key) {
                 c.NCKEY_ESC, '[' => {
                     if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state = .normal;
+                        self.state.* = .normal;
                         try self.syncLineIndicatorToFocus();
                     }
                 },
@@ -481,7 +605,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
                 c.NCKEY_ENTER, '\n', '\r' => {
                     const query = self.detail_bar.?.conclude() orelse return .Noop;
                     if (query.result == .found) {
-                        self.state = .seek;
+                        self.state.* = .seek;
                     } else if (self.detail_bar) |*bar| {
                         bar.setSearchResult(false);
                     }
@@ -507,7 +631,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
             switch (input_event.key) {
                 c.NCKEY_ESC, 'q', '[' => {
                     if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state = .normal;
+                        self.state.* = .normal;
                         try self.syncLineIndicatorToFocus();
                     }
                 },
@@ -709,8 +833,8 @@ fn oppositeSearchDirection(dir: DetailBar.Query.SearchDirection) DetailBar.Query
     };
 }
 
-fn detailBarMode(state: State) DetailBar.Mode {
-    return switch (state) {
+fn detailBarMode(state: *const State) DetailBar.Mode {
+    return switch (state.*) {
         .normal => .normal,
         .editing => .comment,
         .select => .select,
@@ -884,7 +1008,7 @@ fn startCommentFromDisplayRange(self: *Self, start: usize, end: usize) !void {
         } });
     }
 
-    self.state = .{ .editing = .{ .normal = .{
+    self.state.* = .{ .editing = .{ .normal = .{
         .first_display_line = next_insertable_line_num,
         .comment = comment,
     } } };
@@ -967,7 +1091,7 @@ fn appendCommentDisplayLines(self: *Self, comment: *Comments.Comment) !void {
 fn rebuildDisplayLinesAfterEditing(self: *Self) !void {
     const log = std.log.scoped(.diff_window);
     const before_len = self.display_lines.len();
-    const edit_state = switch (self.state) {
+    const edit_state = switch (self.state.*) {
         .editing => |editing| editing,
         else => return,
     };
@@ -1041,7 +1165,7 @@ fn commentDisplayLineCount(self: *Self, first_display_line: usize, comment: *con
 }
 
 fn refreshEditingDisplayLineAfterRebuild(self: *Self) void {
-    switch (self.state) {
+    switch (self.state.*) {
         .editing => |*edit_state| switch (edit_state.*) {
             .normal => |*editing| {
                 editing.first_display_line = self.firstDisplayLineForComment(editing.comment) orelse editing.first_display_line;
@@ -1065,7 +1189,7 @@ fn firstDisplayLineForComment(self: *Self, comment: *const Comments.Comment) ?us
 }
 
 fn syncEditingCursor(self: *Self) !void {
-    const edit_state = switch (self.state) {
+    const edit_state = switch (self.state.*) {
         .editing => |editing| editing,
         else => return,
     };
@@ -1258,7 +1382,7 @@ fn moveSelectionFocus(self: *Self, direction: SelectionDirection) !bool {
 }
 
 fn syncLineIndicatorToFocus(self: *Self) !void {
-    if (self.state == .editing) return;
+    if (self.state.* == .editing) return;
     const indicator = &(self.line_indicator orelse return);
     const indicator_y: c_int = @intCast((self.focus_line -| if (self.diff != null) self.top_line else 0) + 1);
     try indicator.move(indicator_y);
