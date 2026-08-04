@@ -90,6 +90,7 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
 
         var input = std.mem.zeroes(c.ncinput);
         const key = self.input_source.get_input_nblock(self.nc_ctx, &input);
+
         if (key != 0) {
             const now_ms: i64 = std.Io.Clock.real.now(io).toMilliseconds();
 
@@ -102,9 +103,9 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
             self.sender.trySend(io, input_event) catch |err| {
                 log.err("Error encountering while sending: {any}", .{err});
             };
+        } else {
+            try io.sleep(self.sampling_interval, .awake);
         }
-
-        try io.sleep(self.sampling_interval, .awake);
     }
 }
 

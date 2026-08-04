@@ -114,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
     const alloc = if (comptime build_options.use_testing_allocator) blk: {
         debug_alloc = DebugAllocator{};
         break :blk debug_alloc.?.allocator();
-    } else std.heap.page_allocator;
+    } else std.heap.smp_allocator;
     defer {
         if (debug_alloc) |*allocator| {
             if (allocator.deinit() == .leak)
