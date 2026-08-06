@@ -1,8 +1,8 @@
 # TODO
 - [ ] Add shortcut for centering the focus line (we will probably need an leaky bucket for this)
-    - [ ] Double stage input processing pipeline
-    - [ ] Refactor handleInput on Component interface
-    - [ ] Add registerKeymap on Component interface
+    - [ ] Add a method on the Component interface to register for timeout wake time (maybe we do this via update time and instead of i64 we return an union denoting the type of unblock)
+    - [ ] Refactor InputEvent to be an union of existing InputEvent and timeout (with now_ms)
+    - [ ] Implement this method for all Component
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml / zon)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Context expansion

@@ -135,6 +135,7 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
 
                 break;
             },
+
             .Mount => |to_mount| {
                 // Iterating by index from the original end means newly-mounted
                 // components do not handle the same input event that mounted them.
@@ -143,7 +144,11 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
                 }
                 try self.components.append(self.alloc, to_mount.component);
             },
+
+            .Claimed => break,
+
             .Quit => return error.Terminate,
+
             .Noop => continue,
         }
     }
@@ -161,13 +166,16 @@ fn tick(self: *Self, frame_time: FrameTime) !void {
                 const to_remove = self.components.orderedRemove(i);
                 try to_remove.cleanUp();
             },
+
             .Mount => |to_mount| {
                 // Iterating by index from the original end means newly-mounted
                 // components do not handle the same input event that mounted them.
                 try self.components.append(self.alloc, to_mount.component);
             },
+
             .Quit => return error.Terminate,
-            .Noop => continue,
+
+            .Claimed, .Noop => continue,
         }
     }
 }

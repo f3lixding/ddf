@@ -650,7 +650,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
         },
     }
 
-    return .Noop;
+    return .Claimed;
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {

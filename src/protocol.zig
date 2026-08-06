@@ -29,6 +29,10 @@ pub const Conclusion = union(enum) {
         hide: bool,
     },
 
+    /// Signal to the event loop that this event is claimed and no other
+    /// components in the stack needs to be consulted
+    Claimed,
+
     /// This is always talking about self
     Dismount,
 
