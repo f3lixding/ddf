@@ -8,13 +8,14 @@ const c = util.c;
 const protocol = @import("../protocol.zig");
 
 const InputEvent = protocol.InputEvent;
+const Input = protocol.Input;
 const FrameTime = protocol.FrameTime;
 const Conclusion = protocol.Conclusion;
 const RenderCtx = protocol.RenderCtx;
 
 const Component = @import("Component.zig");
-const DiffWindow = @import("DiffWindow.zig");
-const Bucket = util.LeakyBucket(InputEvent);
+const DiffWindow = @import("diff_window/root.zig").DiffWindow;
+const Bucket = util.LeakyBucket(Input);
 const logging = std.log.scoped(.splash);
 const Gif = @import("Gif.zig");
 
@@ -61,8 +62,12 @@ pub fn initInterface(self: *Self) Component {
 
             .key_handler = struct {
                 pub fn handleInput(ptr: *anyopaque, event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
+                    const input = switch (event) {
+                        .input => |input| input,
+                        .timeout => return .Noop,
+                    };
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return try @call(.always_inline, handleInputEvent, .{ self_typed, event, render_ctx });
+                    return try @call(.always_inline, handleInputEvent, .{ self_typed, input, render_ctx });
                 }
             }.handleInput,
 
@@ -140,7 +145,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
     };
 }
 
-pub fn handleInputEvent(self: *Self, input_event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
+pub fn handleInputEvent(self: *Self, input_event: Input, render_ctx: *const RenderCtx) !Conclusion {
     if (self.hidden) {
         return .Noop;
     }
@@ -163,7 +168,7 @@ pub fn handleInputEvent(self: *Self, input_event: InputEvent, render_ctx: *const
             const open_diff = " df";
             var iter = input_slice.iterator();
 
-            var last_relevant_evt: ?*InputEvent = null;
+            var last_relevant_evt: ?*Input = null;
             var count: usize = 0;
             while (iter.next()) |event| {
                 if (event.key == open_diff[0]) {

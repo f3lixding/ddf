@@ -26,6 +26,7 @@ pub const makePlaneTransparent = plane.makePlaneTransparent;
 pub const LeakyBucket = leaky_bucket.LeakyBucket;
 pub const KeymapSink = ks.KeymapSink;
 pub const KeyChord = ks.KeyChord;
+pub const Binding = ks.Binding;
 
 pub const getDirRelativeToHome = path.getDirRelativeToHome;
 pub const getDirRelativeToHomeSentinel = path.getDirRelativeToHomeSentinel;

@@ -4,7 +4,7 @@ const LeakyBucket = @import("leaky_bucket.zig").LeakyBucket;
 
 pub fn ParseResult(comptime CommandType: type) type {
     return struct {
-        command: CommandType,
+        command: @Tuple(&.{ CommandType, ?CommandType }),
         consumed: usize,
     };
 }
@@ -19,7 +19,7 @@ pub fn KeymapSink(
         pub const Bucket = LeakyBucket(InputEventType);
         pub const Opts = Bucket.Opts;
         pub const Result = ParseResult(CommandType);
-        pub const ParsingFn = *const fn (ContextType, Bucket.Slice.Iterator) ?Result;
+        pub const ParsingFn = *const fn (ContextType, *Bucket.Slice.Iterator) ?Result;
 
         const Self = @This();
 
@@ -39,11 +39,11 @@ pub fn KeymapSink(
             };
         }
 
-        pub fn processForPotentialHit(self: *Self, input_event: InputEventType) !?CommandType {
+        pub fn processForPotentialHit(self: *Self, input_event: InputEventType) !?std.meta.Tuple(&.{ CommandType, ?CommandType }) {
             const slice = try self.bucket.insertAndReport(input_event);
-            const iter = slice.iterator();
+            var iter = slice.iterator();
 
-            if (self.parsing_fn(self.ctx, iter)) |res| {
+            if (self.parsing_fn(self.ctx, &iter)) |res| {
                 self.bucket.evictN(res.consumed);
                 return res.command;
             }
@@ -58,7 +58,7 @@ pub fn KeymapSink(
             const bucket_size = self.bucket.buf.len;
             const latest_idx = if (self.bucket.tail == 0) bucket_size - 1 else self.bucket.tail - 1;
             const latest = &self.bucket.buf[latest_idx];
-            const latest_ts: i64 = @field(latest, "timestamp");
+            const latest_ts: i64 = @field(latest.*, "timestamp");
 
             const next_timeout_in = cur_time - latest_ts;
 
@@ -112,6 +112,10 @@ pub const KeyChord = struct {
     };
 };
 
+pub fn Binding(comptime T: type) type {
+    return struct { keys: []const KeyChord, command: T };
+}
+
 test "keymap sink returns command and evicts consumed events" {
     const Event = struct {
         timestamp: i64,
@@ -120,8 +124,7 @@ test "keymap sink returns command and evicts consumed events" {
     const Command = enum { open };
     const Sink = KeymapSink(void, Event, Command);
     const Parser = struct {
-        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
-            var iter = iter_arg;
+        fn parse(_: void, iter: *Sink.Bucket.Slice.Iterator) ?Sink.Result {
             var matched: usize = 0;
 
             while (iter.next()) |event| {
@@ -131,7 +134,7 @@ test "keymap sink returns command and evicts consumed events" {
                 }
 
                 if (matched == 1 and event.key == 'b') {
-                    return .{ .command = .open, .consumed = 2 };
+                    return .{ .command = .{ .open, null }, .consumed = 2 };
                 }
 
                 matched = 0;
@@ -143,10 +146,12 @@ test "keymap sink returns command and evicts consumed events" {
 
     var sink = Sink.init({}, Parser.parse, .{ .debounce = 10_000 });
 
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'a' }));
-    try std.testing.expectEqual(Command.open, (try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'b' })).?);
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'a' })) == null);
+    const hit = (try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'b' })).?;
+    try std.testing.expectEqual(Command.open, hit[0]);
+    try std.testing.expectEqual(@as(?Command, null), hit[1]);
 
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 2, .key = 'c' }));
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 2, .key = 'c' })) == null);
     const reported = try sink.bucket.insertAndReport(.{ .timestamp = 3, .key = 'd' });
 
     try std.testing.expectEqual(@as(usize, 2), reported.first.len);
@@ -163,10 +168,9 @@ test "keymap sink keeps events when parser misses" {
     const Command = enum { open };
     const Sink = KeymapSink(void, Event, Command);
     const Parser = struct {
-        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
-            var iter = iter_arg;
+        fn parse(_: void, iter: *Sink.Bucket.Slice.Iterator) ?Sink.Result {
             while (iter.next()) |event| {
-                if (event.key == 'z') return .{ .command = .open, .consumed = 1 };
+                if (event.key == 'z') return .{ .command = .{ .open, null }, .consumed = 1 };
             }
             return null;
         }
@@ -174,8 +178,8 @@ test "keymap sink keeps events when parser misses" {
 
     var sink = Sink.init({}, Parser.parse, .{ .debounce = 10_000 });
 
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'x' }));
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'y' }));
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 0, .key = 'x' })) == null);
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 1, .key = 'y' })) == null);
     const reported = try sink.bucket.insertAndReport(.{ .timestamp = 2, .key = 'w' });
 
     try std.testing.expectEqual(@as(usize, 3), reported.first.len);
@@ -193,8 +197,7 @@ test "keymap sink evicts consumed events from wrapped bucket" {
     const Command = enum { open };
     const Sink = KeymapSink(void, Event, Command);
     const Parser = struct {
-        fn parse(_: void, iter_arg: Sink.Bucket.Slice.Iterator) ?Sink.Result {
-            var iter = iter_arg;
+        fn parse(_: void, iter: *Sink.Bucket.Slice.Iterator) ?Sink.Result {
             var matched: usize = 0;
 
             while (iter.next()) |event| {
@@ -209,7 +212,7 @@ test "keymap sink evicts consumed events from wrapped bucket" {
                 }
 
                 if (matched == 2 and event.key == 'c') {
-                    return .{ .command = .open, .consumed = 3 };
+                    return .{ .command = .{ .open, null }, .consumed = 3 };
                 }
 
                 matched = 0;
@@ -226,11 +229,13 @@ test "keymap sink evicts consumed events from wrapped bucket" {
     }
     sink.bucket.clear();
 
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1000, .key = 'a' })); // index 23
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1001, .key = 'b' })); // index 24
-    try std.testing.expectEqual(Command.open, (try sink.processForPotentialHit(.{ .timestamp = 1002, .key = 'c' })).?); // index 0
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 1000, .key = 'a' })) == null); // index 23
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 1001, .key = 'b' })) == null); // index 24
+    const hit = (try sink.processForPotentialHit(.{ .timestamp = 1002, .key = 'c' })).?; // index 0
+    try std.testing.expectEqual(Command.open, hit[0]);
+    try std.testing.expectEqual(@as(?Command, null), hit[1]);
 
-    try std.testing.expectEqual(@as(?Command, null), try sink.processForPotentialHit(.{ .timestamp = 1003, .key = 'd' }));
+    try std.testing.expectEqual(@as(bool, true), (try sink.processForPotentialHit(.{ .timestamp = 1003, .key = 'd' })) == null);
     const reported = try sink.bucket.insertAndReport(.{ .timestamp = 1004, .key = 'e' });
 
     try std.testing.expectEqual(@as(usize, 2), reported.first.len);

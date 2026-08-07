@@ -5,10 +5,15 @@ const c = util.c;
 
 const Component = @import("components/Component.zig");
 
-pub const InputEvent = struct {
+pub const Input = struct {
     timestamp: i64,
     key: u32,
     ncinput: c.ncinput,
+};
+
+pub const InputEvent = union(enum) {
+    input: Input,
+    timeout,
 };
 
 pub const FrameTime = struct {

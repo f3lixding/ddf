@@ -1,30 +1,37 @@
 const std = @import("std");
 
-const util = @import("../util/root.zig");
-const consts = @import("../consts.zig");
+const util = @import("../../util/root.zig");
+const consts = @import("../../consts.zig");
 const c = util.c;
-const protocol = @import("../protocol.zig");
+const protocol = @import("../../protocol.zig");
 const LineId = protocol.LineId;
 const InputEvent = protocol.InputEvent;
+const Input = protocol.Input;
 const FrameTime = protocol.FrameTime;
 const Conclusion = protocol.Conclusion;
-const Component = @import("Component.zig");
-const Bucket = util.LeakyBucket(InputEvent);
+const Component = @import("../Component.zig");
+const Bucket = util.LeakyBucket(Input);
 const RenderCtx = protocol.RenderCtx;
 const ASSET_PATH = consts.ASSET_PATH;
-const diff_ = @import("diff.zig");
+const diff_ = @import("../diff.zig");
 const Diff = diff_.Diff;
-const LineIndicator = @import("LineIndicator.zig");
-const Comments = @import("Comments.zig");
-const Cursor = @import("Cursor.zig");
-const DetailBar = @import("DetailBar.zig");
+const LineIndicator = @import("../LineIndicator.zig");
+const Comments = @import("../Comments.zig");
+const Cursor = @import("../Cursor.zig");
+const DetailBar = @import("../DetailBar.zig");
 
-const Self = @This();
+const default_keymaps = @import("default_keymaps.zig");
+const Command = default_keymaps.Command;
+const CommandKind = default_keymaps.CommandKind;
+const CommandText = default_keymaps.Text;
 const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
-const KeymapSink = util.KeymapSink(KeymapSinkCtx, InputEvent, Command);
+const KeymapSink = util.KeymapSink(KeymapSinkCtx, Input, Command);
 const KeyChord = util.KeyChord;
 
+const Self = @This();
+
 const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
+const default_bindings = default_keymaps.default_bindings;
 
 const State = union(enum) {
     pub const EditState = union(enum) { normal: struct {
@@ -42,84 +49,6 @@ const State = union(enum) {
     seek,
 };
 
-const CommandKind = enum {
-    dismount,
-    resize,
-
-    move_up,
-    move_down,
-    move_page_up,
-    move_page_down,
-    move_selection_up,
-    move_selection_down,
-    move_selection_page_up,
-    move_selection_page_down,
-
-    goto_top,
-    goto_bottom,
-    center_focus,
-
-    enter_select,
-    exit_to_normal,
-    toggle_selection_bound,
-
-    start_comment_at_focus,
-    start_comment_at_selection,
-
-    start_search_up,
-    start_search_down,
-    accept_search,
-    search_delete_char,
-    search_add_text,
-
-    repeat_search,
-    repeat_search_opposite,
-
-    finish_editing,
-    edit_delete_char,
-    edit_add_newline,
-    edit_add_text,
-};
-
-const Command = union(CommandKind) {
-    dismount,
-    resize,
-
-    move_up,
-    move_down,
-    move_page_up,
-    move_page_down,
-    move_selection_up,
-    move_selection_down,
-    move_selection_page_up,
-    move_selection_page_down,
-
-    goto_top,
-    goto_bottom,
-    center_focus,
-
-    enter_select,
-    exit_to_normal,
-    toggle_selection_bound,
-
-    start_comment_at_focus,
-    start_comment_at_selection,
-
-    start_search_up,
-    start_search_down,
-    accept_search,
-    search_delete_char,
-    search_add_text: []const u8,
-
-    repeat_search,
-    repeat_search_opposite,
-
-    finish_editing,
-    edit_delete_char,
-    edit_add_newline,
-    edit_add_text: []const u8,
-};
-
 const Keymaps = std.HashMap(
     []const KeyChord,
     CommandKind,
@@ -127,10 +56,88 @@ const Keymaps = std.HashMap(
     std.hash_map.default_max_load_percentage,
 );
 
+const KeymapPrefixes = std.AutoHashMap(KeyChord, void);
+
 const KeymapSinkCtx = struct {
     state: *const State,
     keymap: Keymaps,
+    prefixes: KeymapPrefixes,
 };
+
+fn chordFromInput(input: Input) KeyChord {
+    return .{
+        .key = input.key,
+        .mods = @intCast(input.ncinput.modifiers),
+    };
+}
+
+fn emptyCommandText() CommandText {
+    return .{ .buf = undefined, .len = 0 };
+}
+
+fn commandTextFromInput(input: Input) ?CommandText {
+    var tmp: [util.input_text_buffer_len]u8 = undefined;
+    const text = util.inputText(input.key, input.ncinput, &tmp);
+    if (!util.isTextInput(text)) return null;
+
+    var res: CommandText = .{ .buf = undefined, .len = text.len };
+    @memcpy(res.buf[0..text.len], text);
+    return res;
+}
+
+fn commandFromKind(kind: CommandKind) Command {
+    return switch (kind) {
+        .dismount => .dismount,
+        .resize => .resize,
+        .move_up => .move_up,
+        .move_down => .move_down,
+        .move_page_up => .move_page_up,
+        .move_page_down => .move_page_down,
+        .move_selection_up => .move_selection_up,
+        .move_selection_down => .move_selection_down,
+        .move_selection_page_up => .move_selection_page_up,
+        .move_selection_page_down => .move_selection_page_down,
+        .goto_top => .goto_top,
+        .goto_bottom => .goto_bottom,
+        .center_focus => .center_focus,
+        .enter_select => .enter_select,
+        .exit_to_normal => .exit_to_normal,
+        .toggle_selection_bound => .toggle_selection_bound,
+        .start_comment_at_focus => .start_comment_at_focus,
+        .start_comment_at_selection => .start_comment_at_selection,
+        .start_search_up => .start_search_up,
+        .start_search_down => .start_search_down,
+        .accept_search => .accept_search,
+        .search_delete_char => .search_delete_char,
+        .search_add_text => .{ .search_add_text = emptyCommandText() },
+        .repeat_search => .repeat_search,
+        .repeat_search_opposite => .repeat_search_opposite,
+        .finish_editing => .finish_editing,
+        .edit_delete_char => .edit_delete_char,
+        .edit_add_newline => .edit_add_newline,
+        .edit_add_text => .{ .edit_add_text = emptyCommandText() },
+    };
+}
+
+fn commandForSequence(
+    state: State,
+    bindings: []const default_keymaps.Binding,
+    sequence: []const KeyChord,
+    latest_input: Input,
+) ?Command {
+    for (bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return commandFromKind(binding.command);
+    }
+
+    if (sequence.len != 1) return null;
+
+    const text = commandTextFromInput(latest_input) orelse return null;
+    return switch (state) {
+        .search => .{ .search_add_text = text },
+        .editing => .{ .edit_add_text = text },
+        else => null,
+    };
+}
 
 state: *State,
 
@@ -208,12 +215,33 @@ pub fn initInterface(self: *Self) Component {
             .key_handler = struct {
                 pub fn handleInput(ptr: *anyopaque, event: InputEvent, render_ctx: *const RenderCtx) !Conclusion {
                     _ = render_ctx;
-                    // We will only handle key down
-                    if (event.key == 0 or event.ncinput.evtype == c.NCTYPE_RELEASE)
-                        return .Noop;
-
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return try @call(.always_inline, handleInputEvent, .{ self_typed, event });
+
+                    switch (event) {
+                        .timeout => {
+                            self_typed.keymap_sink.bucket.clear();
+                            return .Claimed;
+                        },
+                        .input => |input| {
+                            // We will only handle key down
+                            if (input.key == 0 or input.ncinput.evtype == c.NCTYPE_RELEASE)
+                                return .Noop;
+
+                            const commands = try self_typed.keymap_sink.processForPotentialHit(input) orelse return .Noop;
+
+                            const first_res = try @call(.always_inline, handleInputEvent, .{ self_typed, commands[0] });
+                            switch (first_res) {
+                                .Noop, .Claimed => {},
+                                else => return first_res,
+                            }
+
+                            if (commands[1]) |second| {
+                                return try @call(.always_inline, handleInputEvent, .{ self_typed, second });
+                            }
+
+                            return first_res;
+                        },
+                    }
                 }
             }.handleInput,
 
@@ -269,14 +297,27 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
     }
 
     const state = try alloc.create(State);
+    errdefer alloc.destroy(state);
     state.* = .normal;
+
+    var keymap: Keymaps = .init(alloc);
+    errdefer keymap.deinit();
+    for (default_bindings) |binding| {
+        try keymap.put(binding.keys, binding.command);
+    }
+
+    var prefixes: KeymapPrefixes = .init(alloc);
+    errdefer prefixes.deinit();
+    for (default_bindings) |binding| {
+        if (binding.keys.len > 1) {
+            try prefixes.put(binding.keys[0], {});
+        }
+    }
+
     const keymapsink_ctx = KeymapSinkCtx{
         .state = state,
-        .keymap = blk: {
-            const map: Keymaps = .init(alloc);
-
-            break :blk map;
-        },
+        .keymap = keymap,
+        .prefixes = prefixes,
     };
 
     var self: Self = .{
@@ -286,19 +327,40 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
         .output = run_result.stdout,
         .stderr = run_result.stderr,
         .keymap_sink = .init(keymapsink_ctx, struct {
-            pub fn parse(ctx: KeymapSinkCtx, iter: Bucket.Slice.Iterator) ?KeymapSink.Result {
-                const keymap = &ctx.keymap;
-                _ = keymap;
-                _ = iter;
-                const component_state = ctx.state;
+            pub fn parse(ctx: KeymapSinkCtx, iter: *Bucket.Slice.Iterator) ?KeymapSink.Result {
+                var len: usize = 0;
+                var sequence_buf: [8]KeyChord = undefined;
+                var latest_input: ?Input = null;
 
-                switch (component_state.*) {
-                    .normal => {},
-                    .editing => {},
-                    .select => {},
-                    .search => {},
-                    .seek => {},
+                while (iter.next()) |input| {
+                    if (len >= sequence_buf.len) return null;
+                    sequence_buf[len] = chordFromInput(input.*);
+                    latest_input = input.*;
+                    len += 1;
                 }
+
+                if (len == 0) return null;
+
+                const input = latest_input.?;
+                const component_state = ctx.state.*;
+                const sequence = sequence_buf[0..len];
+                if (commandForSequence(component_state, default_keymaps.universal_bindings[0..], sequence, input)) |command| {
+                    return .{ .command = .{ command, null }, .consumed = len };
+                }
+
+                const active_bindings = switch (component_state) {
+                    .normal => default_keymaps.normal_bindings[0..],
+                    .editing => default_keymaps.editing_bindings[0..],
+                    .select => default_keymaps.select_bindings[0..],
+                    .search => default_keymaps.search_bindings[0..],
+                    .seek => default_keymaps.seek_bindings[0..],
+                };
+
+                if (commandForSequence(component_state, active_bindings, sequence, input)) |command| {
+                    return .{ .command = .{ command, null }, .consumed = len };
+                }
+
+                if (len == 1 and ctx.prefixes.contains(sequence[0])) return null;
 
                 return null;
             }
@@ -383,274 +445,232 @@ pub fn deinit(self: *Self) void {
         self.main_plane = null;
     }
 
+    self.keymap_sink.ctx.keymap.deinit();
+    self.keymap_sink.ctx.prefixes.deinit();
     self.display_lines.deinit();
     self.alloc.free(self.output);
     self.alloc.free(self.stderr);
     self.alloc.destroy(self.state);
 }
 
-pub fn handleInputEvent(self: *Self, input_event: InputEvent) !Conclusion {
+pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
     defer if (self.detail_bar) |*bar| {
         bar.setMode(self.alloc, detailBarMode(self.state));
     };
 
-    // Special casing universal events
-    if (input_event.key == c.NCKEY_RESIZE) {
-        self.pending_resize = true;
-        self.display_dirty = true;
+    switch (command) {
+        .resize => {
+            self.pending_resize = true;
+            self.display_dirty = true;
+            return .Noop;
+        },
 
-        return .Noop;
-    }
+        .dismount => return .Dismount,
 
-    switch (self.state.*) {
-        .normal => {
-            switch (input_event.key) {
-                'q', c.NCKEY_ESC => return .Dismount,
-
-                'j', c.NCKEY_DOWN => {
-                    if (self.diff != null) {
-                        if (self.moveFocusDown()) {
-                            try self.syncLineIndicatorToFocus();
-                            self.display_dirty = true;
-                        }
-                    }
-                },
-
-                'k', c.NCKEY_UP => {
-                    if (self.diff != null) {
-                        if (self.moveFocusUp()) {
-                            try self.syncLineIndicatorToFocus();
-                            self.display_dirty = true;
-                        }
-                    }
-                },
-
-                'u', 'U' => {
-                    if (self.diff != null) {
-                        if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                            if (self.moveFocusPageUp()) {
-                                try self.syncLineIndicatorToFocus();
-                                self.display_dirty = true;
-                            }
-                        }
-                    }
-                },
-
-                'd', 'D' => {
-                    if (self.diff != null) {
-                        if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                            if (self.moveFocusPageDown()) {
-                                try self.syncLineIndicatorToFocus();
-                                self.display_dirty = true;
-                            }
-                        }
-                    }
-                },
-
-                'V' => {
-                    if (self.diff != null and self.line_indicator != null) {
-                        self.state.* = .select;
-                        self.line_indicator.?.enterVisualMode();
-                    }
-                },
-
-                'c', 'C' => {
-                    if (self.diff != null) {
-                        try self.startCommentFromDisplayRange(self.focus_line, self.focus_line);
-                    }
-                },
-
-                '/' => {
-                    if (self.detail_bar) |*bar| {
-                        bar.setMode(self.alloc, .search);
-                        self.state.* = .search;
-                    }
-                },
-
-                '?' => {
-                    if (self.detail_bar) |*bar| {
-                        bar.setMode(self.alloc, .search);
-                        bar.flipSearchDirection();
-                        self.state.* = .search;
-                    }
-                },
-
-                else => {},
+        .move_down => {
+            if (self.diff != null and self.moveFocusDown()) {
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
             }
         },
 
-        .editing => |editing_detail| {
-            switch (editing_detail) {
-                .normal => |editing| {
-                    const comment = editing.comment;
+        .move_up => {
+            if (self.diff != null and self.moveFocusUp()) {
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
+            }
+        },
 
-                    switch (input_event.key) {
-                        c.NCKEY_ESC => {
-                            if (comment.content.items.len == 0) {
-                                const comment_rows = self.commentDisplayLineCount(editing.first_display_line, comment);
-                                if (self.comments.?.removeComment(self.alloc, comment)) {
-                                    self.state.* = .{ .editing = .{ .deletion = .{
-                                        .first_display_line = editing.first_display_line,
-                                        .comment_rows = comment_rows,
-                                    } } };
-                                    try self.rebuildDisplayLinesAfterEditing();
-                                }
-                            }
-                            self.state.* = .normal;
-                            if (self.cursor) |*cursor| try cursor.hide();
-                            try self.syncLineIndicatorToFocus();
-                        },
+        .move_page_down => {
+            if (self.diff != null and self.moveFocusPageDown()) {
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
+            }
+        },
 
-                        c.NCKEY_BACKSPACE, 127 => {
-                            if (comment.content.items.len > 0) {
-                                try comment.removeContent(util.lastUtf8CodepointLen(comment.content.items));
+        .move_page_up => {
+            if (self.diff != null and self.moveFocusPageUp()) {
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
+            }
+        },
+
+        .enter_select => {
+            if (self.diff != null and self.line_indicator != null) {
+                self.state.* = .select;
+                self.line_indicator.?.enterVisualMode();
+            }
+        },
+
+        .exit_to_normal => {
+            self.state.* = .normal;
+            if (self.cursor) |*cursor| try cursor.hide();
+            try self.syncLineIndicatorToFocus();
+        },
+
+        .start_comment_at_focus => {
+            if (self.diff != null) {
+                try self.startCommentFromDisplayRange(self.focus_line, self.focus_line);
+            }
+        },
+
+        .move_selection_down => {
+            if (try self.moveSelectionFocus(.down)) self.display_dirty = true;
+        },
+
+        .move_selection_up => {
+            if (try self.moveSelectionFocus(.up)) self.display_dirty = true;
+        },
+
+        .move_selection_page_down => {
+            if (try self.moveSelectionFocus(.page_down)) self.display_dirty = true;
+        },
+
+        .move_selection_page_up => {
+            if (try self.moveSelectionFocus(.page_up)) self.display_dirty = true;
+        },
+
+        .toggle_selection_bound => {
+            if (self.line_indicator) |*indicator| switch (indicator.state) {
+                .visual => |*visual| {
+                    visual.focus_bound = if (visual.focus_bound == 0) 1 else 0;
+                    self.focus_line = self.top_line +| visual.range[visual.focus_bound] -| 1;
+                    indicator.pending_transition = true;
+                    indicator.gif.dirty = true;
+                    self.display_dirty = true;
+                },
+                else => {},
+            };
+        },
+
+        .start_comment_at_selection => {
+            if (self.line_indicator) |indicator| switch (indicator.state) {
+                .visual => |visual| {
+                    const start = self.top_line +| visual.range[0] -| 1;
+                    const end = self.top_line +| visual.range[1] -| 1;
+                    try self.startCommentFromDisplayRange(start, end);
+                },
+                else => {},
+            };
+        },
+
+        .start_search_down => {
+            if (self.detail_bar) |*bar| {
+                bar.setMode(self.alloc, .search);
+                self.state.* = .search;
+            }
+        },
+
+        .start_search_up => {
+            if (self.detail_bar) |*bar| {
+                bar.setMode(self.alloc, .search);
+                bar.flipSearchDirection();
+                self.state.* = .search;
+            }
+        },
+
+        .accept_search => {
+            const query = self.detail_bar.?.conclude() orelse return .Noop;
+            if (query.result == .found) {
+                self.state.* = .seek;
+            } else if (self.detail_bar) |*bar| {
+                bar.setSearchResult(false);
+            }
+        },
+
+        .search_delete_char => {
+            try self.detail_bar.?.modifySearchQuery(self.alloc, .delete_single);
+            _ = try self.searchFromDetailBar(null);
+        },
+
+        .search_add_text => |text| {
+            const text_slice = text.slice();
+            if (util.isTextInput(text_slice)) {
+                try self.detail_bar.?.modifySearchQuery(self.alloc, .{ .add_multiple = text_slice });
+                _ = try self.searchFromDetailBar(null);
+            }
+        },
+
+        .repeat_search => {
+            _ = try self.searchFromDetailBar(null);
+        },
+
+        .repeat_search_opposite => {
+            const query = self.detail_bar.?.conclude() orelse return .Noop;
+            _ = try self.searchFromDetailBar(oppositeSearchDirection(query.dir));
+        },
+
+        .finish_editing => {
+            switch (self.state.*) {
+                .editing => |editing_detail| switch (editing_detail) {
+                    .normal => |editing| {
+                        const comment = editing.comment;
+                        if (comment.content.items.len == 0) {
+                            const comment_rows = self.commentDisplayLineCount(editing.first_display_line, comment);
+                            if (self.comments.?.removeComment(self.alloc, comment)) {
+                                self.state.* = .{ .editing = .{ .deletion = .{
+                                    .first_display_line = editing.first_display_line,
+                                    .comment_rows = comment_rows,
+                                } } };
                                 try self.rebuildDisplayLinesAfterEditing();
                             }
-                        },
+                        }
+                    },
+                    .deletion => {},
+                },
+                else => {},
+            }
+            self.state.* = .normal;
+            if (self.cursor) |*cursor| try cursor.hide();
+            try self.syncLineIndicatorToFocus();
+        },
 
-                        c.NCKEY_ENTER, '\n', '\r' => {
-                            try comment.appendContent(self.alloc, "\n");
+        .edit_delete_char => {
+            switch (self.state.*) {
+                .editing => |editing_detail| switch (editing_detail) {
+                    .normal => |editing| {
+                        const comment = editing.comment;
+                        if (comment.content.items.len > 0) {
+                            try comment.removeContent(util.lastUtf8CodepointLen(comment.content.items));
                             try self.rebuildDisplayLinesAfterEditing();
-                        },
-
-                        else => {
-                            const log = std.log.scoped(.diff_window);
-                            var text_buf: [util.input_text_buffer_len]u8 = undefined;
-                            const text = util.inputText(input_event.key, input_event.ncinput, &text_buf);
-                            if (util.isTextInput(text)) {
-                                try comment.appendContent(self.alloc, text);
-                                log.info("editing append text comment_ptr=0x{x} key={d} text_len={d} content_len={d} modifiers={d} text='{s}'", .{ @intFromPtr(comment), input_event.key, text.len, comment.content.items.len, input_event.ncinput.modifiers, text });
-                                try self.rebuildDisplayLinesAfterEditing();
-                            } else {
-                                log.info("editing ignored input comment_ptr=0x{x} key={d} text_len={d} modifiers={d}", .{ @intFromPtr(comment), input_event.key, text.len, input_event.ncinput.modifiers });
-                            }
-                        },
-                    }
-                },
-                .deletion => {},
-            }
-        },
-
-        .select => {
-            switch (input_event.key) {
-                c.NCKEY_ESC, 'V', '[' => {
-                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state.* = .normal;
-                        try self.syncLineIndicatorToFocus();
-                    }
-                },
-
-                'j', c.NCKEY_DOWN => {
-                    if (try self.moveSelectionFocus(.down)) {
-                        self.display_dirty = true;
-                    }
-                },
-
-                'k', c.NCKEY_UP => {
-                    if (try self.moveSelectionFocus(.up)) {
-                        self.display_dirty = true;
-                    }
-                },
-
-                'u', 'U' => {
-                    if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        if (try self.moveSelectionFocus(.page_up)) {
-                            self.display_dirty = true;
                         }
-                    }
+                    },
+                    .deletion => {},
                 },
-
-                'd', 'D' => {
-                    if ((input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        if (try self.moveSelectionFocus(.page_down)) {
-                            self.display_dirty = true;
-                        }
-                    }
-                },
-
-                'o' => {
-                    if (self.line_indicator) |*indicator| switch (indicator.state) {
-                        .visual => |*visual| {
-                            visual.focus_bound = if (visual.focus_bound == 0) 1 else 0;
-                            self.focus_line = self.top_line +| visual.range[visual.focus_bound] -| 1;
-                            indicator.pending_transition = true;
-                            indicator.gif.dirty = true;
-                            self.display_dirty = true;
-                        },
-                        else => {},
-                    };
-                },
-
-                'c', 'C' => {
-                    if (self.line_indicator) |indicator| switch (indicator.state) {
-                        .visual => |visual| {
-                            const start = self.top_line +| visual.range[0] -| 1;
-                            const end = self.top_line +| visual.range[1] -| 1;
-                            try self.startCommentFromDisplayRange(start, end);
-                        },
-                        else => {},
-                    };
-                },
-
                 else => {},
             }
         },
 
-        .search => {
-            switch (input_event.key) {
-                c.NCKEY_ESC, '[' => {
-                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state.* = .normal;
-                        try self.syncLineIndicatorToFocus();
-                    }
+        .edit_add_newline => {
+            switch (self.state.*) {
+                .editing => |editing_detail| switch (editing_detail) {
+                    .normal => |editing| {
+                        try editing.comment.appendContent(self.alloc, "\n");
+                        try self.rebuildDisplayLinesAfterEditing();
+                    },
+                    .deletion => {},
                 },
-
-                c.NCKEY_ENTER, '\n', '\r' => {
-                    const query = self.detail_bar.?.conclude() orelse return .Noop;
-                    if (query.result == .found) {
-                        self.state.* = .seek;
-                    } else if (self.detail_bar) |*bar| {
-                        bar.setSearchResult(false);
-                    }
-                },
-
-                c.NCKEY_BACKSPACE, 127 => {
-                    try self.detail_bar.?.modifySearchQuery(self.alloc, .delete_single);
-                    _ = try self.searchFromDetailBar(null);
-                },
-
-                else => {
-                    var text_buf: [util.input_text_buffer_len]u8 = undefined;
-                    const text = util.inputText(input_event.key, input_event.ncinput, &text_buf);
-                    if (util.isTextInput(text)) {
-                        try self.detail_bar.?.modifySearchQuery(self.alloc, .{ .add_multiple = text });
-                        _ = try self.searchFromDetailBar(null);
-                    }
-                },
-            }
-        },
-
-        .seek => {
-            switch (input_event.key) {
-                c.NCKEY_ESC, 'q', '[' => {
-                    if (input_event.key != '[' or (input_event.ncinput.modifiers & c.NCKEY_MOD_CTRL) != 0) {
-                        self.state.* = .normal;
-                        try self.syncLineIndicatorToFocus();
-                    }
-                },
-
-                'n', 'N' => {
-                    _ = try self.searchFromDetailBar(null);
-                },
-
-                'p', 'P' => {
-                    const query = self.detail_bar.?.conclude() orelse return .Noop;
-                    _ = try self.searchFromDetailBar(oppositeSearchDirection(query.dir));
-                },
-
                 else => {},
             }
         },
+
+        .edit_add_text => |text| {
+            const text_slice = text.slice();
+            switch (self.state.*) {
+                .editing => |editing_detail| switch (editing_detail) {
+                    .normal => |editing| {
+                        if (util.isTextInput(text_slice)) {
+                            try editing.comment.appendContent(self.alloc, text_slice);
+                            try self.rebuildDisplayLinesAfterEditing();
+                        }
+                    },
+                    .deletion => {},
+                },
+                else => {},
+            }
+        },
+
+        .goto_top, .goto_bottom, .center_focus => {},
     }
 
     return .Claimed;

@@ -2,7 +2,7 @@ const std = @import("std");
 
 const util = @import("util/root.zig");
 const c = util.c;
-const DiffWindow = @import("components/DiffWindow.zig");
+const DiffWindow = @import("components/diff_window/root.zig").DiffWindow;
 
 const protocol = @import("protocol.zig");
 const InputEvent = protocol.InputEvent;
@@ -107,7 +107,10 @@ fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
             };
         } else |err| switch (err) {
             error.Timeout => {
-                // we handle this outside of this block
+                self.handleInputEvent(nc_ctx, .timeout) catch |handle_err| switch (handle_err) {
+                    error.Terminate => break,
+                    else => std.log.scoped(.app).err("input timeout handler failed: {any}", .{handle_err}),
+                };
             },
             else => return err,
         }
@@ -119,7 +122,7 @@ fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
 }
 
 fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
-    if (evt.key == c.NCKEY_RESIZE) {
+    if (evt == .input and evt.input.key == c.NCKEY_RESIZE) {
         if (c.notcurses_refresh(nc_ctx, &self.render_ctx.term_rows, &self.render_ctx.term_cols) < 0) {
             return error.RefreshFailed;
         }
@@ -312,11 +315,11 @@ test "handleInputEvent mounts and dismounts components" {
     try app.components.append(alloc, dismount_state.component());
     try app.components.append(alloc, mounting_state.component());
 
-    const input_event: InputEvent = .{
+    const input_event: InputEvent = .{ .input = .{
         .timestamp = 123,
         .key = 'x',
         .ncinput = std.mem.zeroes(c.ncinput),
-    };
+    } };
 
     try app.handleInputEvent(@ptrFromInt(1), input_event);
 
@@ -346,11 +349,11 @@ test "app core loop consumes input until cancelled" {
 
     try app.start(io, @ptrFromInt(1));
 
-    const input_event: InputEvent = .{
+    const input_event: InputEvent = .{ .input = .{
         .timestamp = 123,
         .key = 'x',
         .ncinput = std.mem.zeroes(c.ncinput),
-    };
+    } };
 
     try channel.tx.trySend(io, input_event);
 

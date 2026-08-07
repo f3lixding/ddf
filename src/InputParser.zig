@@ -94,11 +94,11 @@ pub fn coreLoop(self: *Self, io: std.Io) anyerror!void {
         if (key != 0) {
             const now_ms: i64 = std.Io.Clock.real.now(io).toMilliseconds();
 
-            const input_event: InputEvent = .{
+            const input_event: InputEvent = .{ .input = .{
                 .timestamp = now_ms,
                 .key = key,
                 .ncinput = input,
-            };
+            } };
 
             self.sender.trySend(io, input_event) catch |err| {
                 log.err("Error encountering while sending: {any}", .{err});
@@ -152,5 +152,5 @@ test "core loop" {
     var rx = channel.rx;
     const res = try rx.recv(io);
 
-    try std.testing.expectEqual(@as(u32, 'o'), res.key);
+    try std.testing.expectEqual(@as(u32, 'o'), res.input.key);
 }
