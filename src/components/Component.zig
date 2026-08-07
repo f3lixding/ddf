@@ -14,7 +14,7 @@ ptr: *anyopaque,
 vtable: *const VTable,
 
 pub const VTable = struct {
-    update_interval: ?*const fn (*anyopaque) i64 = null,
+    next_update_time: ?*const fn (*anyopaque, FrameTime) i64 = null,
     update: ?*const fn (*anyopaque, FrameTime, *const RenderCtx) anyerror!Conclusion = null,
     render: *const fn (*anyopaque, *const RenderCtx) anyerror!void,
     key_handler: ?*const fn (*anyopaque, InputEvent, *const RenderCtx) anyerror!Conclusion = null,
@@ -38,9 +38,9 @@ pub fn update(self: Component, frame_time: FrameTime, render_ctx: *const RenderC
 
 /// Called by the orchestrator to retrieve the component's preference to have
 /// internal states updated
-pub fn updateInterval(self: Component) ?i64 {
-    const updateIntervalFn = self.vtable.update_interval orelse return null;
-    return updateIntervalFn(self.ptr);
+pub fn updateInterval(self: Component, frame_time: FrameTime) ?i64 {
+    const updateIntervalFn = self.vtable.next_update_time orelse return null;
+    return updateIntervalFn(self.ptr, frame_time);
 }
 
 pub fn isDirty(self: Component) bool {

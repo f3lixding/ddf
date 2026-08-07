@@ -74,8 +74,9 @@ pub fn initInterface(self: *Self) Component {
                 }
             }._update,
 
-            .update_interval = struct {
-                pub fn updateInterval(ptr: *anyopaque) i64 {
+            .next_update_time = struct {
+                pub fn updateInterval(ptr: *anyopaque, frame_time: FrameTime) i64 {
+                    _ = frame_time;
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
                     if (self_typed.gif) |*g| {
                         return g.updateInterval() orelse 1000;

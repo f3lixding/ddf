@@ -224,10 +224,13 @@ pub fn initInterface(self: *Self) Component {
                 }
             }._update,
 
-            .update_interval = struct {
-                pub fn updateInterval(ptr: *anyopaque) i64 {
-                    _ = ptr;
-                    return 1000 / 24;
+            .next_update_time = struct {
+                pub fn updateInterval(ptr: *anyopaque, frame_time: FrameTime) i64 {
+                    const normal_frame_interval: i64 = 1000 / 24;
+                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
+                    const from_km = self_typed.keymap_sink.nextTimeoutIn(frame_time.now_ms) orelse std.math.maxInt(i64);
+
+                    return @min(normal_frame_interval, from_km);
                 }
             }.updateInterval,
 

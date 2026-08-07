@@ -83,7 +83,13 @@ fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
     while (true) {
         try io.checkCancel();
 
-        const interval = self.loopTime();
+        const pre_recv_now = std.Io.Timestamp.now(io, .awake);
+        const pre_recv_elapsed = last_tick.durationTo(pre_recv_now);
+        const pre_recv_frame_time: FrameTime = .{
+            .now_ms = pre_recv_now.toMilliseconds(),
+            .elapsed_ms = pre_recv_elapsed.toMilliseconds(),
+        };
+        const interval = self.loopTime(pre_recv_frame_time);
         const recv_res = self.rx.recvWithTimeout(io, interval);
 
         const now = std.Io.Timestamp.now(io, .awake);
@@ -222,11 +228,11 @@ fn nsToMs(ns: i128) f64 {
     return @as(f64, @floatFromInt(ns)) / @as(f64, std.time.ns_per_ms);
 }
 
-fn loopTime(self: Self) i64 {
+fn loopTime(self: Self, frame_time: FrameTime) i64 {
     var shortest: i64 = std.time.ms_per_s;
 
     for (self.components.items) |*comp| {
-        const comp_interval = comp.updateInterval() orelse continue;
+        const comp_interval = comp.updateInterval(frame_time) orelse continue;
         shortest = @min(shortest, comp_interval);
     }
 

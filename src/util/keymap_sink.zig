@@ -50,6 +50,20 @@ pub fn KeymapSink(
 
             return null;
         }
+
+        pub fn nextTimeoutIn(self: Self, cur_time: i64) ?i64 {
+            if (self.bucket.head == self.bucket.tail)
+                return null;
+
+            const bucket_size = self.bucket.buf.len;
+            const latest_idx = if (self.bucket.tail == 0) bucket_size - 1 else self.bucket.tail - 1;
+            const latest = &self.bucket.buf[latest_idx];
+            const latest_ts: i64 = @field(latest, "timestamp");
+
+            const next_timeout_in = cur_time - latest_ts;
+
+            return @max(0, next_timeout_in);
+        }
     };
 }
 
