@@ -1,4 +1,8 @@
+const std = @import("std");
+
 const util = @import("../../util/root.zig");
+const protocol = @import("../../protocol.zig");
+const Input = protocol.Input;
 const KeyChord = util.KeyChord;
 const c = util.c;
 
@@ -91,7 +95,154 @@ pub const Command = union(CommandKind) {
     edit_add_text: Text,
 };
 
+pub fn emptyText() Text {
+    return .{ .buf = undefined, .len = 0 };
+}
+
+pub fn commandFromKind(kind: CommandKind) Command {
+    return switch (kind) {
+        .noop => .noop,
+        .dismount => .dismount,
+        .resize => .resize,
+        .move_up => .move_up,
+        .move_down => .move_down,
+        .move_page_up => .move_page_up,
+        .move_page_down => .move_page_down,
+        .move_selection_up => .move_selection_up,
+        .move_selection_down => .move_selection_down,
+        .move_selection_page_up => .move_selection_page_up,
+        .move_selection_page_down => .move_selection_page_down,
+        .goto_top => .goto_top,
+        .goto_bottom => .goto_bottom,
+        .center_focus => .center_focus,
+        .enter_select => .enter_select,
+        .exit_to_normal => .exit_to_normal,
+        .toggle_selection_bound => .toggle_selection_bound,
+        .start_comment_at_focus => .start_comment_at_focus,
+        .start_comment_at_selection => .start_comment_at_selection,
+        .start_search_up => .start_search_up,
+        .start_search_down => .start_search_down,
+        .accept_search => .accept_search,
+        .search_delete_char => .search_delete_char,
+        .search_add_text => .{ .search_add_text = emptyText() },
+        .repeat_search => .repeat_search,
+        .repeat_search_opposite => .repeat_search_opposite,
+        .finish_editing => .finish_editing,
+        .edit_delete_char => .edit_delete_char,
+        .edit_add_newline => .edit_add_newline,
+        .edit_add_text => .{ .edit_add_text = emptyText() },
+    };
+}
+
 pub const Binding = util.Binding(CommandKind);
+
+pub const Mode = enum {
+    normal,
+    editing,
+    select,
+    search,
+    seek,
+};
+
+pub fn chordFromInput(input: Input) KeyChord {
+    return .{
+        .key = input.key,
+        .mods = @intCast(input.ncinput.modifiers),
+    };
+}
+
+pub fn commandTextFromInput(input: Input) ?Text {
+    var tmp: [util.input_text_buffer_len]u8 = undefined;
+    const text = util.inputText(input.key, input.ncinput, &tmp);
+    if (!util.isTextInput(text)) return null;
+
+    var res: Text = .{ .buf = undefined, .len = text.len };
+    @memcpy(res.buf[0..text.len], text);
+    return res;
+}
+
+pub fn commandForSingle(
+    mode: Mode,
+    bindings: []const Binding,
+    chord: KeyChord,
+    input: Input,
+) ?Command {
+    const sequence = [_]KeyChord{chord};
+
+    for (universal_bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
+    }
+
+    for (bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
+    }
+
+    const text = commandTextFromInput(input) orelse return null;
+    return switch (mode) {
+        .search => .{ .search_add_text = text },
+        .editing => .{ .edit_add_text = text },
+        else => null,
+    };
+}
+
+fn appendParsedCommand(
+    first: *?Command,
+    second: *?Command,
+    command: Command,
+) void {
+    if (first.* == null) {
+        first.* = command;
+    } else if (second.* == null) {
+        second.* = command;
+    }
+}
+
+pub fn commandForSequence(
+    mode: Mode,
+    bindings: []const Binding,
+    sequence: []const KeyChord,
+    inputs: []const Input,
+) ?@Tuple(&.{ Command, ?Command }) {
+    for (universal_bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
+    }
+
+    for (bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
+    }
+
+    if (sequence.len == 1) {
+        const command = commandForSingle(mode, bindings, sequence[0], inputs[0]) orelse return null;
+        return .{ command, null };
+    }
+
+    var first: ?Command = null;
+    var second: ?Command = null;
+    for (sequence, inputs) |chord, input| {
+        const command = commandForSingle(mode, bindings, chord, input) orelse continue;
+        appendParsedCommand(&first, &second, command);
+    }
+
+    return .{ first orelse .noop, second };
+}
+
+pub fn sequenceStartsWithPrefix(bindings: []const Binding, chord: KeyChord) bool {
+    for (bindings) |binding| {
+        if (binding.keys.len > 1 and KeyChord.SingleContext.eql(.{}, binding.keys[0], chord)) return true;
+    }
+
+    return false;
+}
+
+pub fn activeBindingsForMode(mode: Mode) []const Binding {
+    return switch (mode) {
+        .normal => normal_bindings[0..],
+        .editing => editing_bindings[0..],
+        .select => select_bindings[0..],
+        .search => search_bindings[0..],
+        .seek => seek_bindings[0..],
+    };
+}
 
 const none: u32 = 0;
 const shift: u32 = c.NCKEY_MOD_SHIFT;

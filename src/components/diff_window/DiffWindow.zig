@@ -23,7 +23,6 @@ const DetailBar = @import("../DetailBar.zig");
 const default_keymaps = @import("default_keymaps.zig");
 const Command = default_keymaps.Command;
 const CommandKind = default_keymaps.CommandKind;
-const CommandText = default_keymaps.Text;
 const DisplayLineStorage = util.FenwickTreeStorage(DisplayLine);
 const KeymapSink = util.KeymapSink(KeymapSinkCtx, Input, Command);
 const KeyChord = util.KeyChord;
@@ -34,13 +33,16 @@ const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color"
 const default_bindings = default_keymaps.default_bindings;
 
 const State = union(enum) {
-    pub const EditState = union(enum) { normal: struct {
-        first_display_line: usize,
-        comment: *Comments.Comment,
-    }, deletion: struct {
-        first_display_line: usize,
-        comment_rows: usize,
-    } };
+    pub const EditState = union(enum) {
+        normal: struct {
+            first_display_line: usize,
+            comment: *Comments.Comment,
+        },
+        deletion: struct {
+            first_display_line: usize,
+            comment_rows: usize,
+        },
+    };
 
     normal,
     editing: EditState,
@@ -64,143 +66,18 @@ const KeymapSinkCtx = struct {
     prefixes: KeymapPrefixes,
 };
 
-fn chordFromInput(input: Input) KeyChord {
-    return .{
-        .key = input.key,
-        .mods = @intCast(input.ncinput.modifiers),
-    };
-}
-
-fn emptyCommandText() CommandText {
-    return .{ .buf = undefined, .len = 0 };
-}
-
-fn commandTextFromInput(input: Input) ?CommandText {
-    var tmp: [util.input_text_buffer_len]u8 = undefined;
-    const text = util.inputText(input.key, input.ncinput, &tmp);
-    if (!util.isTextInput(text)) return null;
-
-    var res: CommandText = .{ .buf = undefined, .len = text.len };
-    @memcpy(res.buf[0..text.len], text);
-    return res;
-}
-
-fn commandFromKind(kind: CommandKind) Command {
-    return switch (kind) {
-        .noop => .noop,
-        .dismount => .dismount,
-        .resize => .resize,
-        .move_up => .move_up,
-        .move_down => .move_down,
-        .move_page_up => .move_page_up,
-        .move_page_down => .move_page_down,
-        .move_selection_up => .move_selection_up,
-        .move_selection_down => .move_selection_down,
-        .move_selection_page_up => .move_selection_page_up,
-        .move_selection_page_down => .move_selection_page_down,
-        .goto_top => .goto_top,
-        .goto_bottom => .goto_bottom,
-        .center_focus => .center_focus,
-        .enter_select => .enter_select,
-        .exit_to_normal => .exit_to_normal,
-        .toggle_selection_bound => .toggle_selection_bound,
-        .start_comment_at_focus => .start_comment_at_focus,
-        .start_comment_at_selection => .start_comment_at_selection,
-        .start_search_up => .start_search_up,
-        .start_search_down => .start_search_down,
-        .accept_search => .accept_search,
-        .search_delete_char => .search_delete_char,
-        .search_add_text => .{ .search_add_text = emptyCommandText() },
-        .repeat_search => .repeat_search,
-        .repeat_search_opposite => .repeat_search_opposite,
-        .finish_editing => .finish_editing,
-        .edit_delete_char => .edit_delete_char,
-        .edit_add_newline => .edit_add_newline,
-        .edit_add_text => .{ .edit_add_text = emptyCommandText() },
-    };
-}
-
-fn commandForSingle(
-    state: State,
-    bindings: []const default_keymaps.Binding,
-    chord: KeyChord,
-    input: Input,
-) ?Command {
-    const sequence = [_]KeyChord{chord};
-
-    for (default_keymaps.universal_bindings) |binding| {
-        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
-    }
-
-    for (bindings) |binding| {
-        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
-    }
-
-    const text = commandTextFromInput(input) orelse return null;
+fn modeForState(state: State) default_keymaps.Mode {
     return switch (state) {
-        .search => .{ .search_add_text = text },
-        .editing => .{ .edit_add_text = text },
-        else => null,
+        .normal => .normal,
+        .editing => .editing,
+        .select => .select,
+        .search => .search,
+        .seek => .seek,
     };
-}
-
-fn appendParsedCommand(
-    first: *?Command,
-    second: *?Command,
-    command: Command,
-) void {
-    if (first.* == null) {
-        first.* = command;
-    } else if (second.* == null) {
-        second.* = command;
-    }
-}
-
-fn commandForSequence(
-    state: State,
-    bindings: []const default_keymaps.Binding,
-    sequence: []const KeyChord,
-    inputs: []const Input,
-) ?std.meta.Tuple(&.{ Command, ?Command }) {
-    for (default_keymaps.universal_bindings) |binding| {
-        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
-    }
-
-    for (bindings) |binding| {
-        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
-    }
-
-    if (sequence.len == 1) {
-        const command = commandForSingle(state, bindings, sequence[0], inputs[0]) orelse return null;
-        return .{ command, null };
-    }
-
-    var first: ?Command = null;
-    var second: ?Command = null;
-    for (sequence, inputs) |chord, input| {
-        const command = commandForSingle(state, bindings, chord, input) orelse continue;
-        appendParsedCommand(&first, &second, command);
-    }
-
-    return .{ first orelse .noop, second };
-}
-
-fn sequenceStartsWithPrefix(bindings: []const default_keymaps.Binding, chord: KeyChord) bool {
-    for (bindings) |binding| {
-        if (binding.keys.len > 1 and KeyChord.SingleContext.eql(.{}, binding.keys[0], chord)) return true;
-    }
-
-    return false;
 }
 
 fn activeBindingsForState(state: State) []const default_keymaps.Binding {
-    return switch (state) {
-        .normal => default_keymaps.normal_bindings[0..],
-        .editing => default_keymaps.editing_bindings[0..],
-        .select => default_keymaps.select_bindings[0..],
-        .search => default_keymaps.search_bindings[0..],
-        .seek => default_keymaps.seek_bindings[0..],
-    };
+    return default_keymaps.activeBindingsForMode(modeForState(state));
 }
 
 state: *State,
@@ -395,7 +272,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
                 while (iter.next()) |input| {
                     if (len >= sequence_buf.len) return null;
-                    sequence_buf[len] = chordFromInput(input.*);
+                    sequence_buf[len] = default_keymaps.chordFromInput(input.*);
                     input_buf[len] = input.*;
                     len += 1;
                 }
@@ -407,7 +284,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
 
                 const sequence = sequence_buf[0..len];
                 const inputs = input_buf[0..len];
-                if (commandForSequence(component_state, active_bindings, sequence, inputs)) |commands| {
+                if (default_keymaps.commandForSequence(modeForState(component_state), active_bindings, sequence, inputs)) |commands| {
                     return .{ .command = commands, .consumed = len };
                 }
 
@@ -509,10 +386,10 @@ fn handleTimedOutPrefix(self: *Self) !Conclusion {
     if (bucket.head == bucket.tail) return .Noop;
 
     const input = bucket.buf[bucket.head];
-    const chord = chordFromInput(input);
+    const chord = default_keymaps.chordFromInput(input);
     const active_bindings = activeBindingsForState(self.state.*);
     bucket.evictN(1);
-    const command = commandForSingle(self.state.*, active_bindings, chord, input) orelse return .Claimed;
+    const command = default_keymaps.commandForSingle(modeForState(self.state.*), active_bindings, chord, input) orelse return .Claimed;
     return try handleInputEvent(self, command);
 }
 
