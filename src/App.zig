@@ -83,6 +83,12 @@ fn coreLoop(self: *Self, io: std.Io, nc_ctx: *c.notcurses) anyerror!void {
     while (true) {
         try io.checkCancel();
 
+        // This can be confusing. In case I am reading this sometime later:
+        // There are two timing here: pre_recv_now and now.
+        // - prev_recv_now is used to consult all components and retrieve the most accurate timeouts possible
+        // - now has to be calculated again after because at this point we could be interval worth of ms could have elapsed, in which case pre_recv_now is no longer accurate
+        //
+        // Note that the second FrameTime is calculated with the same last_tick because between the first and second ft we had not updated any of the components
         const pre_recv_now = std.Io.Timestamp.now(io, .awake);
         const pre_recv_elapsed = last_tick.durationTo(pre_recv_now);
         const pre_recv_frame_time: FrameTime = .{
