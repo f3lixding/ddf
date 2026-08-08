@@ -385,6 +385,9 @@ fn handleTimedOutPrefix(self: *Self) !Conclusion {
     const bucket = &self.keymap_sink.bucket;
     if (bucket.head == bucket.tail) return .Noop;
 
+    const now_ms = monotonicMs();
+    if ((self.keymap_sink.nextTimeoutIn(now_ms) orelse return .Noop) > 0) return .Noop;
+
     const input = bucket.buf[bucket.head];
     const chord = default_keymaps.chordFromInput(input);
     const active_bindings = activeBindingsForState(self.state.*);
@@ -636,9 +639,84 @@ pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
                 self.display_dirty = true;
             }
         },
+
+        .yank_comments => {
+            try self.yankComments();
+        },
     }
 
     return .Claimed;
+}
+
+fn yankComments(self: *Self) !void {
+    const log = std.log.scoped(.diff_window);
+
+    const comments = &(self.comments orelse {
+        log.info("yank comments skipped: comments store is not initialized", .{});
+        return;
+    });
+
+    const message = (try comments.formattedMessage(self.alloc)) orelse {
+        log.info("yank comments skipped: no comments to yank", .{});
+        return;
+    };
+    defer self.alloc.free(message);
+
+    log.info("yank comments: writing {d} bytes to clipboard", .{message.len});
+    try writeClipboard(self.alloc, message);
+    log.info("yank comments: clipboard write completed", .{});
+}
+
+fn writeClipboard(alloc: std.mem.Allocator, content: []const u8) !void {
+    const log = std.log.scoped(.diff_window);
+
+    writeWlCopyClipboard(content) catch |err| {
+        log.warn("wl-copy clipboard write failed: {}; falling back to OSC52", .{err});
+        try writeOsc52Clipboard(alloc, content);
+        log.info("OSC52 clipboard write completed", .{});
+        return;
+    };
+
+    log.info("wl-copy clipboard write completed", .{});
+}
+
+fn writeWlCopyClipboard(content: []const u8) !void {
+    const file = c.popen("wl-copy", "w") orelse return error.WlCopyUnavailable;
+    defer _ = c.pclose(file);
+
+    if (content.len == 0) return;
+
+    const written = c.fwrite(content.ptr, 1, content.len, file);
+    if (written != content.len) return error.WlCopyWriteFailed;
+}
+
+fn writeOsc52Clipboard(alloc: std.mem.Allocator, content: []const u8) !void {
+    const prefix = "\x1b]52;c;";
+    const suffix = "\x07";
+
+    const encoded_len = std.base64.standard.Encoder.calcSize(content.len);
+    const encoded = try alloc.alloc(u8, encoded_len);
+    defer alloc.free(encoded);
+    const encoded_slice = std.base64.standard.Encoder.encode(encoded, content);
+
+    const osc = try alloc.alloc(u8, prefix.len + encoded_slice.len + suffix.len);
+    defer alloc.free(osc);
+
+    @memcpy(osc[0..prefix.len], prefix);
+    @memcpy(osc[prefix.len..][0..encoded_slice.len], encoded_slice);
+    @memcpy(osc[prefix.len + encoded_slice.len ..], suffix);
+
+    const tty_fd = c.open("/dev/tty", c.O_WRONLY | c.O_CLOEXEC);
+    if (tty_fd < 0) return error.OpenTtyFailed;
+    defer _ = c.close(tty_fd);
+
+    var written: usize = 0;
+    while (written < osc.len) {
+        const res = c.write(tty_fd, osc.ptr + written, osc.len - written);
+        if (res < 0) return error.ClipboardWriteFailed;
+        if (res == 0) return error.ClipboardWriteFailed;
+        written += @intCast(res);
+    }
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
@@ -1277,6 +1355,10 @@ fn nowNs() i128 {
     var ts: c.timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return (@as(i128, ts.tv_sec) * std.time.ns_per_s) + @as(i128, ts.tv_nsec);
+}
+
+fn monotonicMs() i64 {
+    return @intCast(@divTrunc(nowNs(), std.time.ns_per_ms));
 }
 
 fn nsToMs(ns: i128) f64 {

@@ -60,7 +60,8 @@ pub fn KeymapSink(
             const latest = &self.bucket.buf[latest_idx];
             const latest_ts: i64 = @field(latest.*, "timestamp");
 
-            const next_timeout_in = cur_time - latest_ts;
+            const elapsed = cur_time - latest_ts;
+            const next_timeout_in = self.bucket.debounce - elapsed;
 
             return @max(0, next_timeout_in);
         }
@@ -242,4 +243,27 @@ test "keymap sink evicts consumed events from wrapped bucket" {
     try std.testing.expectEqual(@as(?[]Event, null), reported.second);
     try std.testing.expectEqual(@as(u8, 'd'), reported.first[0].key);
     try std.testing.expectEqual(@as(u8, 'e'), reported.first[1].key);
+}
+
+test "keymap sink nextTimeoutIn reports remaining debounce" {
+    const Event = struct {
+        timestamp: i64,
+        key: u8,
+    };
+    const Command = enum { open };
+    const Sink = KeymapSink(void, Event, Command);
+    const Parser = struct {
+        fn parse(_: void, _: *Sink.Bucket.Slice.Iterator) ?Sink.Result {
+            return null;
+        }
+    };
+
+    var sink = Sink.init({}, Parser.parse, .{ .debounce = 100 });
+
+    try std.testing.expectEqual(@as(?i64, null), sink.nextTimeoutIn(0));
+    try std.testing.expectEqual(@as(?@Tuple(&.{ Command, ?Command }), null), try sink.processForPotentialHit(.{ .timestamp = 1000, .key = 'z' }));
+    try std.testing.expectEqual(@as(i64, 100), sink.nextTimeoutIn(1000).?);
+    try std.testing.expectEqual(@as(i64, 60), sink.nextTimeoutIn(1040).?);
+    try std.testing.expectEqual(@as(i64, 0), sink.nextTimeoutIn(1100).?);
+    try std.testing.expectEqual(@as(i64, 0), sink.nextTimeoutIn(1200).?);
 }

@@ -5,6 +5,7 @@ const leaky_bucket = @import("leaky_bucket.zig");
 const path = @import("path.zig");
 const fw = @import("fenwick_tree.zig");
 const ks = @import("keymap_sink.zig");
+const key_input = @import("key_input.zig");
 
 pub const c = @import("c.zig").c;
 
@@ -27,6 +28,10 @@ pub const LeakyBucket = leaky_bucket.LeakyBucket;
 pub const KeymapSink = ks.KeymapSink;
 pub const KeyChord = ks.KeyChord;
 pub const Binding = ks.Binding;
+pub const KeyMods = key_input.KeyMods;
+pub const keyChord = key_input.keyChord;
+pub const keyChordFromNcInput = key_input.keyChordFromNcInput;
+pub const normalizeKeyMods = key_input.normalizeMods;
 
 pub const getDirRelativeToHome = path.getDirRelativeToHome;
 pub const getDirRelativeToHomeSentinel = path.getDirRelativeToHomeSentinel;
@@ -37,4 +42,5 @@ pub const FenwickTreeStorage = fw.FenwickTreeStorage;
 test {
     _ = @import("fenwick_tree.zig");
     _ = @import("keymap_sink.zig");
+    _ = @import("key_input.zig");
 }

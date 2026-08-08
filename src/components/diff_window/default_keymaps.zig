@@ -23,6 +23,7 @@ pub const CommandKind = enum {
     goto_top,
     goto_bottom,
     center_focus,
+    yank_comments,
 
     enter_select,
     exit_to_normal,
@@ -72,6 +73,7 @@ pub const Command = union(CommandKind) {
     goto_top,
     goto_bottom,
     center_focus,
+    yank_comments,
 
     enter_select,
     exit_to_normal,
@@ -115,6 +117,7 @@ pub fn commandFromKind(kind: CommandKind) Command {
         .goto_top => .goto_top,
         .goto_bottom => .goto_bottom,
         .center_focus => .center_focus,
+        .yank_comments => .yank_comments,
         .enter_select => .enter_select,
         .exit_to_normal => .exit_to_normal,
         .toggle_selection_bound => .toggle_selection_bound,
@@ -145,10 +148,7 @@ pub const Mode = enum {
 };
 
 pub fn chordFromInput(input: Input) KeyChord {
-    return .{
-        .key = input.key,
-        .mods = @intCast(input.ncinput.modifiers),
-    };
+    return util.keyChordFromNcInput(input.key, input.ncinput);
 }
 
 pub fn commandTextFromInput(input: Input) ?Text {
@@ -244,9 +244,9 @@ pub fn activeBindingsForMode(mode: Mode) []const Binding {
     };
 }
 
-const none: u32 = 0;
-const shift: u32 = c.NCKEY_MOD_SHIFT;
-const ctrl: u32 = c.NCKEY_MOD_CTRL;
+const none = util.KeyMods.none;
+const shift = util.KeyMods.shift;
+const ctrl = util.KeyMods.ctrl;
 
 pub const resize = [_]KeyChord{.{ .key = c.NCKEY_RESIZE, .mods = none }};
 pub const esc = [_]KeyChord{.{ .key = c.NCKEY_ESC, .mods = none }};
@@ -264,6 +264,10 @@ pub const g_upper_shift = [_]KeyChord{.{ .key = 'G', .mods = shift }};
 pub const zz = [_]KeyChord{
     .{ .key = 'z', .mods = none },
     .{ .key = 'z', .mods = none },
+};
+pub const yy = [_]KeyChord{
+    .{ .key = 'y', .mods = none },
+    .{ .key = 'y', .mods = none },
 };
 pub const j = [_]KeyChord{.{ .key = 'j', .mods = none }};
 pub const k = [_]KeyChord{.{ .key = 'k', .mods = none }};
@@ -305,6 +309,7 @@ pub const normal_bindings = [_]Binding{
     .{ .keys = &q, .command = .dismount },
     .{ .keys = &esc, .command = .dismount },
     .{ .keys = &zz, .command = .center_focus },
+    .{ .keys = &yy, .command = .yank_comments },
     .{ .keys = &gg, .command = .goto_top },
     .{ .keys = &g_upper, .command = .goto_bottom },
     .{ .keys = &g_upper_shift, .command = .goto_bottom },

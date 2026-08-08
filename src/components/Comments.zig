@@ -70,7 +70,7 @@ pub const Comment = struct {
         try buf.appendSlice(alloc, "\n\n");
         try buf.appendSlice(alloc, written_slice);
         try buf.append(alloc, '\n');
-        try buf.appendSlice(alloc, &self.content.items);
+        try buf.appendSlice(alloc, self.content.items);
     }
 
     /// A border is drawn around the content.
@@ -304,12 +304,16 @@ pub fn sortedComments(self: *Self, alloc: std.mem.Allocator) ![]*Comment {
 }
 
 /// Caller owns the returned slice
-pub fn formattedMessage(self: Self, alloc: std.mem.Allocator) !?[]const u8 {
-    if (self.comments.items.len == 0) return null;
+pub fn formattedMessage(self: *Self, alloc: std.mem.Allocator) !?[]const u8 {
+    if (self.comments.count() == 0) return null;
+
+    const comments = try self.sortedComments(alloc);
+    defer alloc.free(comments);
 
     var res: std.ArrayList(u8) = .empty;
+    errdefer res.deinit(alloc);
 
-    for (self.comments.items) |*comment| {
+    for (comments) |comment| {
         try comment.formattedMessage(alloc, &res);
     }
 
