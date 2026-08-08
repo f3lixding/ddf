@@ -39,7 +39,7 @@ pub fn KeymapSink(
             };
         }
 
-        pub fn processForPotentialHit(self: *Self, input_event: InputEventType) !?std.meta.Tuple(&.{ CommandType, ?CommandType }) {
+        pub fn processForPotentialHit(self: *Self, input_event: InputEventType) !?@Tuple(&.{ CommandType, ?CommandType }) {
             const slice = try self.bucket.insertAndReport(input_event);
             var iter = slice.iterator();
 

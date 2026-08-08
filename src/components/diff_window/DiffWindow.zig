@@ -227,7 +227,7 @@ pub fn initInterface(self: *Self) Component {
                             if (input.key == 0 or input.ncinput.evtype == c.NCTYPE_RELEASE)
                                 return .Noop;
 
-                            const commands = try self_typed.keymap_sink.processForPotentialHit(input) orelse return .Noop;
+                            const commands = try self_typed.keymap_sink.processForPotentialHit(input) orelse return .Claimed;
 
                             const first_res = try @call(.always_inline, handleInputEvent, .{ self_typed, commands[0] });
                             switch (first_res) {
@@ -686,7 +686,14 @@ pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
             }
         },
 
-        .goto_top => {},
+        .goto_top => {
+            if (self.display_lines.len() > 0) {
+                self.focus_line = 0;
+                self.top_line = 0;
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
+            }
+        },
     }
 
     return .Claimed;

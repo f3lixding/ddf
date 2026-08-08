@@ -101,6 +101,11 @@ pub const ctrl_lbracket = [_]KeyChord{.{ .key = '[', .mods = ctrl }};
 
 pub const q = [_]KeyChord{.{ .key = 'q', .mods = none }};
 pub const z = [_]KeyChord{.{ .key = 'z', .mods = none }};
+pub const g = [_]KeyChord{.{ .key = 'g', .mods = none }};
+pub const gg = [_]KeyChord{
+    .{ .key = 'g', .mods = none },
+    .{ .key = 'g', .mods = none },
+};
 pub const g_upper = [_]KeyChord{.{ .key = 'G', .mods = none }};
 pub const g_upper_shift = [_]KeyChord{.{ .key = 'G', .mods = shift }};
 pub const zz = [_]KeyChord{
@@ -147,6 +152,7 @@ pub const normal_bindings = [_]Binding{
     .{ .keys = &q, .command = .dismount },
     .{ .keys = &esc, .command = .dismount },
     .{ .keys = &zz, .command = .center_focus },
+    .{ .keys = &gg, .command = .goto_top },
     .{ .keys = &g_upper, .command = .goto_bottom },
     .{ .keys = &g_upper_shift, .command = .goto_bottom },
 
