@@ -676,7 +676,17 @@ pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
             self.display_dirty = true;
         },
 
-        .goto_top, .goto_bottom => {},
+        .goto_bottom => {
+            const len = self.display_lines.len();
+            if (len > 0) {
+                self.focus_line = len - 1;
+                self.keepFocusAtViewportRow(self.viewport_rows -| 1);
+                try self.syncLineIndicatorToFocus();
+                self.display_dirty = true;
+            }
+        },
+
+        .goto_top => {},
     }
 
     return .Claimed;
