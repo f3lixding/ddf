@@ -670,7 +670,13 @@ pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
             }
         },
 
-        .goto_top, .goto_bottom, .center_focus => {},
+        .center_focus => {
+            self.keepFocusAtViewportRow(self.viewport_rows / 2);
+            try self.syncLineIndicatorToFocus();
+            self.display_dirty = true;
+        },
+
+        .goto_top, .goto_bottom => {},
     }
 
     return .Claimed;

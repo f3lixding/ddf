@@ -100,6 +100,11 @@ pub const esc = [_]KeyChord{.{ .key = c.NCKEY_ESC, .mods = none }};
 pub const ctrl_lbracket = [_]KeyChord{.{ .key = '[', .mods = ctrl }};
 
 pub const q = [_]KeyChord{.{ .key = 'q', .mods = none }};
+pub const z = [_]KeyChord{.{ .key = 'z', .mods = none }};
+pub const zz = [_]KeyChord{
+    .{ .key = 'z', .mods = none },
+    .{ .key = 'z', .mods = none },
+};
 pub const j = [_]KeyChord{.{ .key = 'j', .mods = none }};
 pub const k = [_]KeyChord{.{ .key = 'k', .mods = none }};
 pub const down = [_]KeyChord{.{ .key = c.NCKEY_DOWN, .mods = none }};
@@ -139,6 +144,7 @@ pub const universal_bindings = [_]Binding{
 pub const normal_bindings = [_]Binding{
     .{ .keys = &q, .command = .dismount },
     .{ .keys = &esc, .command = .dismount },
+    .{ .keys = &zz, .command = .center_focus },
 
     .{ .keys = &j, .command = .move_down },
     .{ .keys = &down, .command = .move_down },
