@@ -1,4 +1,5 @@
 # TODO
+- [ ] yy for copying formatted message for comments
 - [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml / zon)
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Context expansion

@@ -87,6 +87,7 @@ fn commandTextFromInput(input: Input) ?CommandText {
 
 fn commandFromKind(kind: CommandKind) Command {
     return switch (kind) {
+        .noop => .noop,
         .dismount => .dismount,
         .resize => .resize,
         .move_up => .move_up,
@@ -119,23 +120,86 @@ fn commandFromKind(kind: CommandKind) Command {
     };
 }
 
-fn commandForSequence(
+fn commandForSingle(
     state: State,
     bindings: []const default_keymaps.Binding,
-    sequence: []const KeyChord,
-    latest_input: Input,
+    chord: KeyChord,
+    input: Input,
 ) ?Command {
-    for (bindings) |binding| {
-        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return commandFromKind(binding.command);
+    const sequence = [_]KeyChord{chord};
+
+    for (default_keymaps.universal_bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
     }
 
-    if (sequence.len != 1) return null;
+    for (bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence[0..], binding.keys)) return commandFromKind(binding.command);
+    }
 
-    const text = commandTextFromInput(latest_input) orelse return null;
+    const text = commandTextFromInput(input) orelse return null;
     return switch (state) {
         .search => .{ .search_add_text = text },
         .editing => .{ .edit_add_text = text },
         else => null,
+    };
+}
+
+fn appendParsedCommand(
+    first: *?Command,
+    second: *?Command,
+    command: Command,
+) void {
+    if (first.* == null) {
+        first.* = command;
+    } else if (second.* == null) {
+        second.* = command;
+    }
+}
+
+fn commandForSequence(
+    state: State,
+    bindings: []const default_keymaps.Binding,
+    sequence: []const KeyChord,
+    inputs: []const Input,
+) ?std.meta.Tuple(&.{ Command, ?Command }) {
+    for (default_keymaps.universal_bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
+    }
+
+    for (bindings) |binding| {
+        if (KeyChord.SequenceContext.eql(.{}, sequence, binding.keys)) return .{ commandFromKind(binding.command), null };
+    }
+
+    if (sequence.len == 1) {
+        const command = commandForSingle(state, bindings, sequence[0], inputs[0]) orelse return null;
+        return .{ command, null };
+    }
+
+    var first: ?Command = null;
+    var second: ?Command = null;
+    for (sequence, inputs) |chord, input| {
+        const command = commandForSingle(state, bindings, chord, input) orelse continue;
+        appendParsedCommand(&first, &second, command);
+    }
+
+    return .{ first orelse .noop, second };
+}
+
+fn sequenceStartsWithPrefix(bindings: []const default_keymaps.Binding, chord: KeyChord) bool {
+    for (bindings) |binding| {
+        if (binding.keys.len > 1 and KeyChord.SingleContext.eql(.{}, binding.keys[0], chord)) return true;
+    }
+
+    return false;
+}
+
+fn activeBindingsForState(state: State) []const default_keymaps.Binding {
+    return switch (state) {
+        .normal => default_keymaps.normal_bindings[0..],
+        .editing => default_keymaps.editing_bindings[0..],
+        .select => default_keymaps.select_bindings[0..],
+        .search => default_keymaps.search_bindings[0..],
+        .seek => default_keymaps.seek_bindings[0..],
     };
 }
 
@@ -218,10 +282,7 @@ pub fn initInterface(self: *Self) Component {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
 
                     switch (event) {
-                        .timeout => {
-                            self_typed.keymap_sink.bucket.clear();
-                            return .Claimed;
-                        },
+                        .timeout => return try self_typed.handleTimedOutPrefix(),
                         .input => |input| {
                             // We will only handle key down
                             if (input.key == 0 or input.ncinput.evtype == c.NCTYPE_RELEASE)
@@ -330,34 +391,24 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) 
             pub fn parse(ctx: KeymapSinkCtx, iter: *Bucket.Slice.Iterator) ?KeymapSink.Result {
                 var len: usize = 0;
                 var sequence_buf: [8]KeyChord = undefined;
-                var latest_input: ?Input = null;
+                var input_buf: [8]Input = undefined;
 
                 while (iter.next()) |input| {
                     if (len >= sequence_buf.len) return null;
                     sequence_buf[len] = chordFromInput(input.*);
-                    latest_input = input.*;
+                    input_buf[len] = input.*;
                     len += 1;
                 }
 
                 if (len == 0) return null;
 
-                const input = latest_input.?;
                 const component_state = ctx.state.*;
+                const active_bindings = activeBindingsForState(component_state);
+
                 const sequence = sequence_buf[0..len];
-                if (commandForSequence(component_state, default_keymaps.universal_bindings[0..], sequence, input)) |command| {
-                    return .{ .command = .{ command, null }, .consumed = len };
-                }
-
-                const active_bindings = switch (component_state) {
-                    .normal => default_keymaps.normal_bindings[0..],
-                    .editing => default_keymaps.editing_bindings[0..],
-                    .select => default_keymaps.select_bindings[0..],
-                    .search => default_keymaps.search_bindings[0..],
-                    .seek => default_keymaps.seek_bindings[0..],
-                };
-
-                if (commandForSequence(component_state, active_bindings, sequence, input)) |command| {
-                    return .{ .command = .{ command, null }, .consumed = len };
+                const inputs = input_buf[0..len];
+                if (commandForSequence(component_state, active_bindings, sequence, inputs)) |commands| {
+                    return .{ .command = commands, .consumed = len };
                 }
 
                 if (len == 1 and ctx.prefixes.contains(sequence[0])) return null;
@@ -453,12 +504,26 @@ pub fn deinit(self: *Self) void {
     self.alloc.destroy(self.state);
 }
 
+fn handleTimedOutPrefix(self: *Self) !Conclusion {
+    const bucket = &self.keymap_sink.bucket;
+    if (bucket.head == bucket.tail) return .Noop;
+
+    const input = bucket.buf[bucket.head];
+    const chord = chordFromInput(input);
+    const active_bindings = activeBindingsForState(self.state.*);
+    bucket.evictN(1);
+    const command = commandForSingle(self.state.*, active_bindings, chord, input) orelse return .Claimed;
+    return try handleInputEvent(self, command);
+}
+
 pub fn handleInputEvent(self: *Self, command: Command) !Conclusion {
     defer if (self.detail_bar) |*bar| {
         bar.setMode(self.alloc, detailBarMode(self.state));
     };
 
     switch (command) {
+        .noop => return .Claimed,
+
         .resize => {
             self.pending_resize = true;
             self.display_dirty = true;

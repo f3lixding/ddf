@@ -3,6 +3,7 @@ const KeyChord = util.KeyChord;
 const c = util.c;
 
 pub const CommandKind = enum {
+    noop,
     dismount,
     resize,
 
@@ -51,6 +52,7 @@ pub const Text = struct {
 };
 
 pub const Command = union(CommandKind) {
+    noop,
     dismount,
     resize,
 
