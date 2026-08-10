@@ -706,17 +706,12 @@ fn writeOsc52Clipboard(alloc: std.mem.Allocator, content: []const u8) !void {
     @memcpy(osc[prefix.len..][0..encoded_slice.len], encoded_slice);
     @memcpy(osc[prefix.len + encoded_slice.len ..], suffix);
 
-    const tty_fd = c.open("/dev/tty", c.O_WRONLY | c.O_CLOEXEC);
-    if (tty_fd < 0) return error.OpenTtyFailed;
-    defer _ = c.close(tty_fd);
+    const tty = c.fopen("/dev/tty", "w") orelse return error.OpenTtyFailed;
+    defer _ = c.fclose(tty);
 
-    var written: usize = 0;
-    while (written < osc.len) {
-        const res = c.write(tty_fd, osc.ptr + written, osc.len - written);
-        if (res < 0) return error.ClipboardWriteFailed;
-        if (res == 0) return error.ClipboardWriteFailed;
-        written += @intCast(res);
-    }
+    const written = c.fwrite(osc.ptr, 1, osc.len, tty);
+    if (written != osc.len) return error.ClipboardWriteFailed;
+    if (c.fflush(tty) != 0) return error.ClipboardWriteFailed;
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
