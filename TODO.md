@@ -6,7 +6,6 @@
 - [ ] Pre-comment line selection validation
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
 - [ ] File picker (but only for files changed)
-- [ ] Log auto clean up / rotation
 - [ ] A proper readme
 - [ ] Refine grapheme width estimation with real notcurses api
 - [ ] Persistent config
@@ -15,6 +14,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Log auto clean up / rotation
 - [x] yy for copying formatted message for comments
 - [x] Add shortcut for centering the focus line (we will probably need an leaky bucket for this)
     - [x] Add a method on the Component interface to register for timeout wake time (maybe we do this via update time and instead of i64 we return an union denoting the type of unblock)
