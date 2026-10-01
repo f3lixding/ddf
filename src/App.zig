@@ -16,17 +16,28 @@ const Self = @This();
 
 alloc: std.mem.Allocator,
 
+opts: Opts,
 components: std.ArrayList(Component) = .empty,
 rx: Receiver,
 future: ?std.Io.Future(anyerror!void) = null,
 render_ctx: RenderCtx = undefined,
 
-pub const Opts = struct {};
+pub const Backend = enum {
+    jj,
+    git,
+    mercurial,
+};
 
-pub fn init(alloc: std.mem.Allocator, rx: Receiver) Self {
+pub const Opts = struct {
+    backend: Backend,
+    start_args: ?[]const []const u8 = null,
+};
+
+pub fn init(alloc: std.mem.Allocator, rx: Receiver, opts: Opts) Self {
     return .{
         .alloc = alloc,
         .rx = rx,
+        .opts = opts,
     };
 }
 
@@ -304,7 +315,7 @@ test "handleInputEvent mounts and dismounts components" {
     const channel = try util.Spsc(InputEvent).init(alloc, 1);
     defer channel.deinit();
 
-    var app = init(alloc, channel.rx);
+    var app = init(alloc, channel.rx, .{ .backend = .jj });
     defer app.deinit(std.testing.io);
 
     var mounted_state: TestComponent = .{ .result = .Noop };
@@ -350,7 +361,7 @@ test "app core loop consumes input until cancelled" {
     const channel = try util.Spsc(InputEvent).init(alloc, 1);
     defer channel.deinit();
 
-    var app = init(alloc, channel.rx);
+    var app = init(alloc, channel.rx, .{ .backend = .jj });
     defer app.deinit(io);
 
     try app.start(io, @ptrFromInt(1));
