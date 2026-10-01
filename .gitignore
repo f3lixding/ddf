@@ -3,3 +3,4 @@ zig-out
 result
 dev-profile*
 
+.amp/portals/*

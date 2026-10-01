@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Amp orb setup: installs single-user Nix and realizes the flake dev shell
+# (zig 0.16, patched notcurses, tree-sitter, patchelf, zig-build), then makes
+# that dev shell the environment of login shells started in this repo.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() { printf '\n==> %s (%(%T)T)\n' "$*" -1; }
+
+nix_profile="$HOME/.nix-profile"
+
+step "Install Nix"
+if [[ ! -x "$nix_profile/bin/nix" ]]; then
+  curl -sSfL https://nixos.org/nix/install | sh -s -- --no-daemon --yes
+fi
+# The installer cannot update this running script's environment.
+# shellcheck disable=SC1091
+source "$nix_profile/etc/profile.d/nix.sh"
+
+mkdir -p "$HOME/.config/nix"
+if ! grep -qs '^experimental-features' "$HOME/.config/nix/nix.conf"; then
+  echo 'experimental-features = nix-command flakes' >> "$HOME/.config/nix/nix.conf"
+fi
+
+step "Realize flake dev shell"
+nix print-dev-env "$repo_root" > /dev/null
+
+step "Hook dev shell into login shells"
+profile_marker="# ddf Nix development shell"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [[ -z "\${IN_NIX_SHELL:-}" && ( "\$PWD" == "$repo_root" || "\$PWD" == "$repo_root"/* ) ]]; then
+  eval "\$("$nix_profile/bin/nix" print-dev-env "$repo_root")"
+fi
+EOF
+fi
+
+step "Agent notes"
+agents_md="$HOME/.config/amp/AGENTS.md"
+agents_marker="# ddf build"
+mkdir -p "$(dirname "$agents_md")"
+if ! grep -Fqx "$agents_marker" "$agents_md" 2>/dev/null; then
+  cat >> "$agents_md" <<'EOF'
+
+# ddf build
+- Login shells in the repo load the Nix flake dev shell (zig 0.16, notcurses, tree-sitter).
+- Build and test with `zig-build` / `zig-build test` (not plain `zig build`): the wrapper sets the rpath and ELF interpreter so binaries run against Nix's glibc.
+EOF
+fi
+
+step "Done"

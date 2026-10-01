@@ -35,8 +35,8 @@
         notcursesPatched = pkgs.notcurses.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ [
             (pkgs.fetchpatch {
-              url = "https://github.com/dankamongmen/notcurses/pull/2926/changes/9e436185ff2da838e3d5f2d119c192537cbfab53.patch";
-              hash = "sha256-1EBbQZghAyvXks5KClStgZ1VXd4MGKm4NwkSXQOluXw=";
+              url = "https://github.com/dankamongmen/notcurses/commit/9e436185ff2da838e3d5f2d119c192537cbfab53.patch";
+              hash = "sha256-TyRfOtAA8Z2HSHopCLUrCsy+CKohYvexDPjufrNIN/k=";
             })
           ];
         });
