@@ -129,6 +129,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     _ = @import("util/root.zig");
+    _ = @import("logging.zig");
     _ = @import("InputParser.zig");
     _ = @import("App.zig");
     _ = @import("components/diff.zig");
