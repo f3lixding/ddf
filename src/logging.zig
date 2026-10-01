@@ -2,10 +2,6 @@ const std = @import("std");
 
 /// Once the active log file reaches this size it is rotated.
 const SIZE_UPPER_BOUND: u64 = 10 * 1024 * 1024;
-/// Number of rotated files (`<path>.1` .. `<path>.N`) to keep. Older ones are
-/// discarded, so disk usage is bounded by roughly
-/// `SIZE_UPPER_BOUND * (MAX_BACKUPS + 1)`.
-const MAX_BACKUPS: usize = 3;
 
 var mutex: std.Io.Mutex = .init;
 var global_io: ?std.Io = null;
@@ -30,7 +26,7 @@ pub fn init(io: std.Io, path: []const u8) !void {
         }
     }
 
-    const file = openLogFile(io, .cwd(), path, SIZE_UPPER_BOUND, MAX_BACKUPS) catch
+    const file = openLogFile(io, .cwd(), path, SIZE_UPPER_BOUND, nowSecs(io)) catch
         return error.FailedToLocateFile;
 
     @memcpy(path_buf[0..path.len], path);
@@ -41,7 +37,7 @@ pub fn init(io: std.Io, path: []const u8) !void {
 
 /// Opens `path` for appending. If it is already at or over `size_limit`, it is
 /// rotated first and a fresh file is created in its place.
-fn openLogFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size_limit: u64, backups: usize) !std.Io.File {
+fn openLogFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size_limit: u64, now_secs: u64) !std.Io.File {
     const existing = dir.openFile(io, path, .{ .mode = .read_write }) catch |err| switch (err) {
         error.FileNotFound => return try dir.createFile(io, path, .{}),
         else => return err,
@@ -54,41 +50,39 @@ fn openLogFile(io: std.Io, dir: std.Io.Dir, path: []const u8, size_limit: u64, b
     if (size < size_limit) return existing;
 
     existing.close(io);
-    try rotate(io, dir, path, backups);
+    try rotate(io, dir, path, now_secs);
     return try dir.createFile(io, path, .{});
 }
 
-/// Shifts `<path>.(N-1)` -> `<path>.N`, ..., `<path>` -> `<path>.1`, where N
-/// is `backups`. The previous `<path>.N` is overwritten. With zero backups the
-/// file is simply deleted. Missing files in the chain are skipped.
-fn rotate(io: std.Io, dir: std.Io.Dir, path: []const u8, backups: usize) !void {
-    if (backups == 0) {
-        dir.deleteFile(io, path) catch |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        };
-        return;
-    }
+/// Renames `<path>` to `<path>.yyyy-mm-dd-hh:mm` (UTC, matching the log line
+/// timestamps). A previous rotation within the same minute is overwritten.
+fn rotate(io: std.Io, dir: std.Io.Dir, path: []const u8, now_secs: u64) !void {
+    const now = std.time.epoch.EpochSeconds{ .secs = now_secs };
+    const day_seconds = now.getDaySeconds();
+    const year_day = now.getEpochDay().calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
 
-    var src_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     var dst_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dst = try std.fmt.bufPrint(&dst_buf, "{s}.{d:0>4}-{d:0>2}-{d:0>2}-{d:0>2}:{d:0>2}", .{
+        path,
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        day_seconds.getHoursIntoDay(),
+        day_seconds.getMinutesIntoHour(),
+    });
+    try dir.rename(path, dir, dst, io);
+}
 
-    var i = backups;
-    while (i > 0) : (i -= 1) {
-        const src = if (i == 1) path else try std.fmt.bufPrint(&src_buf, "{s}.{d}", .{ path, i - 1 });
-        const dst = try std.fmt.bufPrint(&dst_buf, "{s}.{d}", .{ path, i });
-        dir.rename(src, dir, dst, io) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            else => return err,
-        };
-    }
+fn nowSecs(io: std.Io) u64 {
+    return @intCast(std.Io.Clock.real.now(io).toSeconds());
 }
 
 /// Called with `mutex` held when the active file has grown past the limit.
 /// Best-effort: on any failure we keep writing to the current file rather than
 /// losing logs or falling back to stderr (which would corrupt the TUI).
 fn rotateActiveFile(io: std.Io, current: std.Io.File) std.Io.File {
-    rotate(io, .cwd(), global_path, MAX_BACKUPS) catch return current;
+    rotate(io, .cwd(), global_path, nowSecs(io)) catch return current;
     // On POSIX the open handle follows the renamed file, so `current` stays
     // valid until the new file is in place.
     const fresh = std.Io.Dir.cwd().createFile(io, global_path, .{}) catch return current;
@@ -143,7 +137,7 @@ pub fn logFn(
     const writer = &file_writer.interface;
 
     const now = std.time.epoch.EpochSeconds{
-        .secs = @intCast(std.Io.Clock.real.now(io).toSeconds()),
+        .secs = nowSecs(io),
     };
     const day_seconds = now.getDaySeconds();
     const year_day = now.getEpochDay().calculateYearDay();
@@ -183,52 +177,19 @@ fn expectMissing(dir: std.Io.Dir, path: []const u8) !void {
     try std.testing.expectError(error.FileNotFound, dir.statFile(std.testing.io, path, .{}));
 }
 
-test "rotate shifts backups and drops the oldest" {
+// 2026-10-01 17:37:49 UTC
+const test_now: u64 = 1790876269;
+
+test "rotate renames to a timestamped file" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log", .data = "current" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log.1", .data = "one" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log.2", .data = "two" });
-
-    try rotate(io, tmp.dir, "ddf.log", 2);
+    try rotate(io, tmp.dir, "ddf.log", test_now);
 
     try expectMissing(tmp.dir, "ddf.log");
-    try expectFileContent(tmp.dir, "ddf.log.1", "current");
-    try expectFileContent(tmp.dir, "ddf.log.2", "one");
-    try expectMissing(tmp.dir, "ddf.log.3");
-}
-
-test "rotate skips gaps in the backup chain" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log", .data = "current" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log.2", .data = "two" });
-
-    try rotate(io, tmp.dir, "ddf.log", 3);
-
-    try expectMissing(tmp.dir, "ddf.log");
-    try expectFileContent(tmp.dir, "ddf.log.1", "current");
-    try expectMissing(tmp.dir, "ddf.log.2");
-    try expectFileContent(tmp.dir, "ddf.log.3", "two");
-}
-
-test "rotate with zero backups deletes the file" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log", .data = "current" });
-    try rotate(io, tmp.dir, "ddf.log", 0);
-    try expectMissing(tmp.dir, "ddf.log");
-    try expectMissing(tmp.dir, "ddf.log.1");
-
-    // Rotating a missing file is not an error.
-    try rotate(io, tmp.dir, "ddf.log", 0);
-    try rotate(io, tmp.dir, "ddf.log", 2);
+    try expectFileContent(tmp.dir, "ddf.log.2026-10-01-17:37", "current");
 }
 
 test "openLogFile keeps a small file and rotates a full one" {
@@ -237,21 +198,21 @@ test "openLogFile keeps a small file and rotates a full one" {
     defer tmp.cleanup();
 
     // Missing file gets created.
-    const created = try openLogFile(io, tmp.dir, "ddf.log", 8, 2);
+    const created = try openLogFile(io, tmp.dir, "ddf.log", 8, test_now);
     created.close(io);
     try expectFileContent(tmp.dir, "ddf.log", "");
 
     // Under the limit: reopened as-is.
     try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log", .data = "small" });
-    const kept = try openLogFile(io, tmp.dir, "ddf.log", 8, 2);
+    const kept = try openLogFile(io, tmp.dir, "ddf.log", 8, test_now);
     kept.close(io);
     try expectFileContent(tmp.dir, "ddf.log", "small");
-    try expectMissing(tmp.dir, "ddf.log.1");
+    try expectMissing(tmp.dir, "ddf.log.2026-10-01-17:37");
 
     // At the limit: rotated and replaced by an empty file.
     try tmp.dir.writeFile(io, .{ .sub_path = "ddf.log", .data = "12345678" });
-    const fresh = try openLogFile(io, tmp.dir, "ddf.log", 8, 2);
+    const fresh = try openLogFile(io, tmp.dir, "ddf.log", 8, test_now);
     fresh.close(io);
     try expectFileContent(tmp.dir, "ddf.log", "");
-    try expectFileContent(tmp.dir, "ddf.log.1", "12345678");
+    try expectFileContent(tmp.dir, "ddf.log.2026-10-01-17:37", "12345678");
 }
