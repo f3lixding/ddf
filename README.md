@@ -1,13 +1,11 @@
 # ddf
 
-A keyboard-driven terminal UI for reviewing your working-copy changes. ddf shows the current
-[jj](https://github.com/jj-vcs/jj) diff with syntax highlighting. You can leave comments on lines or
-ranges, then copy them all as one message for a reviewer or a coding agent.
+A keyboard-driven terminal UI for reviewing your working-copy changes in
+[jj](https://github.com/jj-vcs/jj) or Git. ddf shows the current diff with syntax highlighting.
+You can leave comments on lines or ranges, then copy them all as one message for a reviewer or a coding agent.
 
 Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 [tree-sitter](https://tree-sitter.github.io/).
-
-![ddf demo](docs/media/demo.gif)
 
 ## Features
 
@@ -16,7 +14,7 @@ Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 - Vim-style navigation, visual line selection and search
 - Inline comments on single lines or selected ranges
 - `yy` copies all comments to the clipboard as formatted text (`wl-copy`, with an OSC 52 fallback)
-- Animated splash screen (looks best in a terminal with pixel graphics, such as kitty, foot or WezTerm)
+- Splash screen listing recent revisions from jj `@` or commits from Git `HEAD`
 
 | Commenting on a change | Searching |
 | --- | --- |
@@ -25,7 +23,7 @@ Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 ## Requirements
 
 - Linux or macOS
-- [`jj`](https://github.com/jj-vcs/jj) on your `PATH`. ddf runs `jj diff` in the current directory.
+- [`jj`](https://github.com/jj-vcs/jj) or `git` on your `PATH`, in a repository of that type. In a colocated jj/Git repository, ddf uses jj.
 - Zig 0.16, notcurses and tree-sitter. The Nix flake provides all three.
 
 ## Building
@@ -52,8 +50,9 @@ flake applies.
 
 ## Usage
 
-Run `ddf` from inside a jj repository, then press <kbd>Space</kbd> <kbd>d</kbd> <kbd>f</kbd> on the
-splash screen to open the diff.
+Run `ddf` from inside a jj or Git repository to see the recent history leading up to `@` or `HEAD`.
+Press <kbd>Space</kbd> <kbd>d</kbd> <kbd>f</kbd> on the splash screen to open the working-copy diff.
+For Git, this compares the working tree and index against `HEAD` (untracked files are not included).
 
 | Mode | Keys | Action |
 | --- | --- | --- |

@@ -29,7 +29,6 @@ const KeyChord = util.KeyChord;
 
 const Self = @This();
 
-const DIFF_ARGV: []const []const u8 = &.{ "jj", "diff", "--tool=:git", "--color", "never" };
 const default_bindings = default_keymaps.default_bindings;
 
 const State = union(enum) {
@@ -212,12 +211,12 @@ pub fn initInterface(self: *Self) Component {
     };
 }
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx) !Self {
+pub fn init(alloc: std.mem.Allocator, io: std.Io, render_ctx: *const RenderCtx, argv: []const []const u8) !Self {
     const log = std.log.scoped(.diff_window);
     const init_start_ns = nowNs();
     const command_start_ns = nowNs();
     const run_result = try std.process.run(alloc, io, .{
-        .argv = DIFF_ARGV,
+        .argv = argv,
         .stdout_limit = .limited(16 * 1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
     });

@@ -21,7 +21,6 @@ const Opts = struct {
     const detection_commands = [_]struct { Backend, []const []const u8 }{
         .{ .jj, &.{ "jj", "root", "--color=never" } },
         .{ .git, &.{ "git", "rev-parse", "--show-toplevel" } },
-        .{ .mercurial, &.{ "hg", "root" } },
     };
 
     args: ?[]const [:0]const u8 = null,
@@ -61,7 +60,7 @@ const Opts = struct {
             var stdout_writer = std.Io.File.writer(stdout, io, &buf);
             const errMsgWriter = &stdout_writer.interface;
 
-            try errMsgWriter.writeAll("No valid backend detected in current directory\n");
+            try errMsgWriter.writeAll("No jj or git repository detected in current directory\n");
             try errMsgWriter.flush();
 
             return;
@@ -101,15 +100,21 @@ const Opts = struct {
             .backend = self.backend.?,
             .start_args = start_args,
         });
+        defer app.deinit(io);
         // TODO: delegate this to the instantiation of App based on the starting arg
         // i.e. if there is no starting arg, we display a plain starting screen
         // if there is one, we display that instead
         const Splash = @import("components/Splash.zig");
         const splash = try alloc.create(Splash);
-        splash.* = try .init(alloc, io, nc_ctx);
-        try app.components.append(alloc, splash.initInterface());
-
-        defer app.deinit(io);
+        splash.* = Splash.init(alloc, io, self.backend.?) catch |err| {
+            alloc.destroy(splash);
+            return err;
+        };
+        app.components.append(alloc, splash.initInterface()) catch |err| {
+            splash.deinit();
+            alloc.destroy(splash);
+            return err;
+        };
 
         try app.startAndAwait(io, nc_ctx);
     }

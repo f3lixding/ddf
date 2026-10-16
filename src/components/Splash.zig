@@ -3,38 +3,29 @@
 const std = @import("std");
 
 const util = @import("../util/root.zig");
-const assets = @import("../assets/assets.zig");
 const c = util.c;
 const protocol = @import("../protocol.zig");
 
 const InputEvent = protocol.InputEvent;
 const Input = protocol.Input;
-const FrameTime = protocol.FrameTime;
 const Conclusion = protocol.Conclusion;
 const RenderCtx = protocol.RenderCtx;
 
 const Component = @import("Component.zig");
 const DiffWindow = @import("diff_window/root.zig").DiffWindow;
+const Backend = @import("../App.zig").Backend;
 const Bucket = util.LeakyBucket(Input);
-const logging = std.log.scoped(.splash);
-const Gif = @import("Gif.zig");
 
 const Self = @This();
 
 alloc: std.mem.Allocator,
 io: std.Io,
 input_bucket: Bucket,
+history: []u8,
+backend: Backend,
 initial_render_done: bool = false,
 hidden: bool = false,
 hiding: bool = false,
-gif: ?Gif = null,
-logo: [5][:0]const u8 = .{
-    "     ____  ______ ",
-    "    / __ \\/ ____/",
-    "   / / / / /_     ",
-    "  / /_/ / __/     ",
-    " /_____/_/        ",
-},
 
 pub fn initInterface(self: *Self) Component {
     return .{
@@ -50,13 +41,7 @@ pub fn initInterface(self: *Self) Component {
             .is_dirty = struct {
                 pub fn isDirty(ptr: *anyopaque) bool {
                     const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    if (self_typed.hiding) return true;
-                    if (self_typed.hidden) return false;
-
-                    return if (self_typed.gif) |g| gif: {
-                        const res = if (g.hidden) false else g.dirty;
-                        break :gif res;
-                    } else false;
+                    return self_typed.hiding or (!self_typed.hidden and !self_typed.initial_render_done);
                 }
             }.isDirty,
 
@@ -70,25 +55,6 @@ pub fn initInterface(self: *Self) Component {
                     return try @call(.always_inline, handleInputEvent, .{ self_typed, input, render_ctx });
                 }
             }.handleInput,
-
-            .update = struct {
-                pub fn _update(ptr: *anyopaque, ft: FrameTime, render_ctx: *const RenderCtx) !Conclusion {
-                    _ = render_ctx;
-                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    return try @call(.always_inline, update, .{ self_typed, ft });
-                }
-            }._update,
-
-            .next_update_time = struct {
-                pub fn updateInterval(ptr: *anyopaque, frame_time: FrameTime) i64 {
-                    _ = frame_time;
-                    const self_typed: *Self = @ptrCast(@alignCast(ptr));
-                    if (self_typed.gif) |*g| {
-                        return g.updateInterval() orelse 1000;
-                    }
-                    return 1000;
-                }
-            }.updateInterval,
 
             .wake = struct {
                 pub fn wake_(ptr: *anyopaque) !void {
@@ -116,32 +82,44 @@ pub fn initInterface(self: *Self) Component {
 }
 
 pub fn deinit(self: *Self) void {
-    if (self.gif) |*gif| {
-        gif.deinit();
-        self.gif = null;
-    }
+    self.alloc.free(self.history);
 }
 
-pub fn init(alloc: std.mem.Allocator, io: std.Io, nc_ctx: *c.notcurses) !Self {
-    const input_bucket = Bucket.init(.{});
-    const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
-    const gif = try Gif.init(
-        nc_ctx,
-        stdplane,
-        .{
-            .height = 20,
-            .asset = .{
-                .name = "scuba-scuba-cat.gif",
-                .bytes = assets.splash_screen,
-            },
-        },
-    );
+pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: Backend) !Self {
+    const argv: []const []const u8 = switch (backend) {
+        .jj => &.{ "jj", "log", "--no-graph", "--color=never", "--no-pager", "-r", "ancestors(@, 64) ~ root()", "-T", "commit_id.short(8) ++ \"\\t\" ++ coalesce(description.first_line(), \"(no description set)\") ++ \"\\n\"" },
+        .git => &.{ "git", "log", "--no-color", "--max-count=64", "--format=%h%x09%s", "HEAD" },
+    };
+    const result = try std.process.run(alloc, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(1024 * 1024),
+        .stderr_limit = .limited(64 * 1024),
+    });
+    defer alloc.free(result.stderr);
+
+    if (result.term != .exited or result.term.exited != 0) {
+        alloc.free(result.stdout);
+        if (backend != .git) return error.HistoryCommandFailed;
+        // An unborn Git repository has no HEAD to list yet.
+        const head = try std.process.run(alloc, io, .{
+            .argv = &.{ "git", "rev-parse", "--verify", "HEAD" },
+            .stdout_limit = .limited(1024),
+            .stderr_limit = .limited(1024),
+        });
+        defer alloc.free(head.stdout);
+        defer alloc.free(head.stderr);
+        if (head.term == .exited and head.term.exited != 0) {
+            return .{ .alloc = alloc, .io = io, .backend = backend, .input_bucket = Bucket.init(.{}), .history = try alloc.dupe(u8, "") };
+        }
+        return error.HistoryCommandFailed;
+    }
 
     return .{
         .alloc = alloc,
         .io = io,
-        .input_bucket = input_bucket,
-        .gif = gif,
+        .input_bucket = Bucket.init(.{}),
+        .history = result.stdout,
+        .backend = backend,
     };
 }
 
@@ -183,7 +161,11 @@ pub fn handleInputEvent(self: *Self, input_event: Input, render_ctx: *const Rend
                 if (count >= open_diff.len) {
                     const diff_window = try self.alloc.create(DiffWindow);
                     errdefer self.alloc.destroy(diff_window);
-                    diff_window.* = try DiffWindow.init(self.alloc, self.io, render_ctx);
+                    const argv: []const []const u8 = switch (self.backend) {
+                        .jj => &.{ "jj", "diff", "--tool=:git", "--color", "never" },
+                        .git => &.{ "git", "diff", "HEAD", "--no-ext-diff", "--no-color" },
+                    };
+                    diff_window.* = try DiffWindow.init(self.alloc, self.io, render_ctx, argv);
 
                     self.hiding = true;
 
@@ -201,73 +183,64 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
 
     if (self.hidden and !self.hiding) return;
 
-    if (!self.initial_render_done) {
-        var rows: c_uint = 0;
-        var cols: c_uint = 0;
-
-        const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
-        c.ncplane_dim_yx(stdplane, &rows, &cols);
-
-        c.ncplane_erase(stdplane);
-
-        const title: [:0]const u8 = "doodle finder";
-        const hint: [:0]const u8 = "press j/f, resize the terminal, make something messy";
-
-        const logo_width: c_uint = @intCast(self.logo[0].len);
-        const block_height: c_uint = self.logo.len + 4;
-        const origin_y = centered(rows, block_height);
-        const origin_x = centered(cols, logo_width);
-
-        if (c.ncplane_set_fg_rgb8(stdplane, 0x85, 0xd7, 0xff) < 0) return error.SetColorFailed;
-        c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
-
-        for (self.logo, 0..) |line, i| {
-            const y: c_int = origin_y + @as(c_int, @intCast(i));
-            if (c.ncplane_putstr_yx(stdplane, y, origin_x, line.ptr) < 0) {
-                return error.PutStrFailed;
-            }
-        }
-
-        c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
-        if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
-        try putCentered(stdplane, origin_y + @as(c_int, @intCast(self.logo.len)) + 1, cols, title);
-
-        if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
-        try putCentered(stdplane, origin_y + @as(c_int, @intCast(self.logo.len)) + 3, cols, hint);
-
-        self.initial_render_done = true;
-
-        const gif_x = origin_x + @as(c_int, @intCast(logo_width));
-        if (self.gif) |*gif| {
-            try gif.move(origin_y, gif_x);
-        }
-    } else if (self.hiding) {
+    const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
+    if (self.hiding) {
         self.hiding = false;
-
-        const stdplane = c.notcurses_stdplane(nc_ctx) orelse return error.NoStdplane;
         c.ncplane_erase(stdplane);
-        c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
-        c.ncplane_set_fg_default(stdplane);
-        c.ncplane_set_bg_default(stdplane);
-
-        if (self.gif) |*gif| {
-            try gif.hide();
-        }
-
         return;
     }
+    if (self.initial_render_done) return;
 
-    if (self.gif) |*gif| try gif.render(nc_ctx);
-}
+    var rows: c_uint = 0;
+    var cols: c_uint = 0;
+    c.ncplane_dim_yx(stdplane, &rows, &cols);
+    c.ncplane_erase(stdplane);
+    c.ncplane_set_bg_default(stdplane);
+    if (rows == 0 or cols == 0) return;
 
-pub fn update(self: *Self, ft: FrameTime) !Conclusion {
-    if (self.hidden) return .Noop;
+    c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
+    if (c.ncplane_set_fg_rgb8(stdplane, 0x85, 0xd7, 0xff) < 0) return error.SetColorFailed;
+    try putClipped(stdplane, 1, 3, cols, if (self.backend == .jj) "ddf  /  jj" else "ddf  /  git");
 
-    if (self.gif) |*gif| {
-        return try gif.update(ft);
+    c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
+    if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
+    try putClipped(stdplane, 3, 3, cols, "Review working tree and history");
+
+    if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
+    try putClipped(stdplane, 5, 3, cols, if (self.backend == .jj) "RECENT REVISIONS  /  @ to ancestors" else "RECENT COMMITS  /  HEAD to ancestors");
+
+    var commits = std.mem.splitScalar(u8, self.history, '\n');
+    var row: c_uint = 7;
+    var index: usize = 0;
+    while (row < rows -| 3) : (row += 1) {
+        const line = commits.next() orelse break;
+        if (line.len == 0) break;
+        const separator = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+
+        if (index == 0) {
+            c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
+            if (c.ncplane_set_fg_rgb8(stdplane, 0x85, 0xd7, 0xff) < 0) return error.SetColorFailed;
+            try putClipped(stdplane, @intCast(row), 3, cols, if (self.backend == .jj) "@" else "HEAD");
+        } else {
+            c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
+            if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
+            try putClipped(stdplane, @intCast(row), 3, cols, "  |");
+        }
+        try putClipped(stdplane, @intCast(row), 10, cols, line[0..separator]);
+        if (c.ncplane_set_fg_rgb8(stdplane, 0xeb, 0xdb, 0xb2) < 0) return error.SetColorFailed;
+        try putClipped(stdplane, @intCast(row), 20, cols, line[separator + 1 ..]);
+        index += 1;
     }
 
-    return .Noop;
+    if (index == 0 and self.history.len == 0) {
+        if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
+        try putClipped(stdplane, 7, 3, cols, "No commits yet");
+    }
+
+    c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
+    if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
+    try putClipped(stdplane, @intCast(rows - 1), 3, cols, if (cols < 65) "Space d f  diff    q  quit" else "Space d f  working tree diff     q  quit");
+    self.initial_render_done = true;
 }
 
 pub fn wake(self: *Self) !void {
@@ -275,31 +248,23 @@ pub fn wake(self: *Self) !void {
     self.hiding = false;
     self.initial_render_done = false;
     self.input_bucket.clear();
-
-    if (self.gif) |*gif| {
-        gif.unhide();
-    }
 }
 
 pub fn hide(self: *Self) !void {
     self.hidden = true;
     self.hiding = true;
     self.input_bucket.clear();
-
-    if (self.gif) |*gif| {
-        gif.dirty = false;
-    }
 }
 
-fn centered(outer: c_uint, inner: c_uint) c_int {
-    if (outer <= inner) return 0;
-    return @intCast((outer - inner) / 2);
-}
-
-fn putCentered(plane: *c.ncplane, y: c_int, cols: c_uint, text: [:0]const u8) !void {
-    const text_width: c_uint = @intCast(text.len);
-    const x = centered(cols, text_width);
-    if (c.ncplane_putstr_yx(plane, y, x, text.ptr) < 0) {
+fn putClipped(plane: *c.ncplane, y: c_int, x: c_uint, cols: c_uint, text: []const u8) !void {
+    if (x >= cols) return;
+    var rows: c_uint = 0;
+    var width: c_uint = 0;
+    c.ncplane_dim_yx(plane, &rows, &width);
+    if (y < 0 or y >= rows) return;
+    const clipped = util.clipToDisplayWidth(text, cols - x);
+    if (clipped.len == 0) return;
+    if (c.ncplane_putnstr_yx(plane, y, @intCast(x), clipped.len, clipped.ptr) < 0) {
         return error.PutStrFailed;
     }
 }
