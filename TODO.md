@@ -1,8 +1,15 @@
 # TODO
-- [ ] Refine arg sets (this would also mean we would need to set up a config, we should use toml / zon)
+- [ ] Refine arg sets
+    - [x] No arguments open the history splash. Support jj and Git; prefer jj in a colocated repository. Mercurial is not supported.
+    - [ ] Define direct-diff arguments, help/usage, and which revisions/path filters (if any) belong in this item.
+    - [ ] Choose TOML or ZON and specify a minimal, read-only config schema/location for the chosen startup and diff defaults. Define CLI > config > detected/default precedence; leave writing settings back to disk for the separate Persistent config item.
+    - [ ] Parse args after the executable name into typed options. Validate unknown/missing/conflicting arguments and show help/errors with meaningful exit statuses before repository detection or notcurses initialization.
+    - [ ] Resolve the backend using the explicit option/config or repository detection, including the no-repository and unsupported-backend cases.
+    - [ ] Use the resolved options to choose the initial component (splash or diff), and pass the same diff options when opening from the splash. Build a safe argv for every supported backend and report subprocess failures to the user rather than only to the log.
+    - [ ] Cover parsing, config precedence, backend resolution, and diff command construction with focused tests; exercise no-arg and direct-diff startup in a repository, plus help/error behavior outside one.
+    - [ ] Update README usage and requirements to match the shipped CLI, config format, and actual backend support.
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Context expansion
-- [ ] Splash screen overhaul (preferrably we would need to display diffs / revs, depending on what the works space is)
 - [ ] Pre-comment line selection validation
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
 - [ ] File picker (but only for files changed)
@@ -14,6 +21,7 @@
 - [ ] Distribution
 
 # DONE
+- [x] Splash screen history for jj `@` and Git `HEAD`
 - [x] Log auto clean up / rotation
 - [x] yy for copying formatted message for comments
 - [x] Add shortcut for centering the focus line (we will probably need an leaky bucket for this)

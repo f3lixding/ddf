@@ -25,7 +25,6 @@ render_ctx: RenderCtx = undefined,
 pub const Backend = enum {
     jj,
     git,
-    mercurial,
 };
 
 pub const Opts = struct {
