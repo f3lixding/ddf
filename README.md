@@ -14,7 +14,7 @@ Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 - Vim-style navigation, visual line selection and search
 - Inline comments on single lines or selected ranges
 - `yy` copies all comments to the clipboard as formatted text (`wl-copy`, with an OSC 52 fallback)
-- Splash screen listing recent revisions from jj `@` or commits from Git `HEAD`
+- Splash screen listing recent revisions from jj `@` or commits from Git `HEAD`, with the animated cat on the right in roomy terminals
 
 | Commenting on a change | Searching |
 | --- | --- |
