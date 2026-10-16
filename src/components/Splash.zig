@@ -20,11 +20,18 @@ const Bucket = util.LeakyBucket(Input);
 const Gif = @import("Gif.zig");
 
 const Self = @This();
+const HistoryEntry = struct {
+    id: []const u8,
+    subject: []const u8,
+};
 
 alloc: std.mem.Allocator,
 io: std.Io,
 input_bucket: Bucket,
 history: []u8,
+entries: std.ArrayList(HistoryEntry),
+selected: usize = 0,
+scroll_top: usize = 0,
 backend: Backend,
 initial_render_done: bool = false,
 hidden: bool = false,
@@ -109,13 +116,14 @@ pub fn initInterface(self: *Self) Component {
 
 pub fn deinit(self: *Self) void {
     if (self.gif) |*gif| gif.deinit();
+    self.entries.deinit(self.alloc);
     self.alloc.free(self.history);
 }
 
 pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: Backend) !Self {
     const argv: []const []const u8 = switch (backend) {
-        .jj => &.{ "jj", "log", "--no-graph", "--color=never", "--no-pager", "-r", "ancestors(@, 64) ~ root()", "-T", "commit_id.short(8) ++ \"\\t\" ++ coalesce(description.first_line(), \"(no description set)\") ++ \"\\n\"" },
-        .git => &.{ "git", "log", "--no-color", "--max-count=64", "--format=%h%x09%s", "HEAD" },
+        .jj => &.{ "jj", "log", "--no-graph", "--color=never", "--no-pager", "-r", "ancestors(@, 64) ~ root()", "-T", "commit_id ++ \"\\t\" ++ coalesce(description.first_line(), \"(no description set)\") ++ \"\\n\"" },
+        .git => &.{ "git", "log", "--no-color", "--max-count=64", "--format=%H%x09%s", "HEAD" },
     };
     const result = try std.process.run(alloc, io, .{
         .argv = argv,
@@ -124,7 +132,7 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: Backend) !Self {
     });
     defer alloc.free(result.stderr);
 
-    if (result.term != .exited or result.term.exited != 0) {
+    const history: []u8 = if (result.term != .exited or result.term.exited != 0) history: {
         alloc.free(result.stdout);
         if (backend != .git) return error.HistoryCommandFailed;
         // An unborn Git repository has no HEAD to list yet.
@@ -136,22 +144,33 @@ pub fn init(alloc: std.mem.Allocator, io: std.Io, backend: Backend) !Self {
         defer alloc.free(head.stdout);
         defer alloc.free(head.stderr);
         if (head.term == .exited and head.term.exited != 0) {
-            return .{ .alloc = alloc, .io = io, .backend = backend, .input_bucket = Bucket.init(.{}), .history = try alloc.dupe(u8, "") };
+            break :history try alloc.dupe(u8, "");
         }
         return error.HistoryCommandFailed;
+    } else result.stdout;
+    errdefer alloc.free(history);
+
+    var entries: std.ArrayList(HistoryEntry) = .empty;
+    errdefer entries.deinit(alloc);
+    var lines = std.mem.splitScalar(u8, history, '\n');
+    while (lines.next()) |line| {
+        const separator = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        if (separator == 0) continue;
+        try entries.append(alloc, .{ .id = line[0..separator], .subject = line[separator + 1 ..] });
     }
 
     return .{
         .alloc = alloc,
         .io = io,
         .input_bucket = Bucket.init(.{}),
-        .history = result.stdout,
+        .history = history,
+        .entries = entries,
         .backend = backend,
     };
 }
 
 pub fn handleInputEvent(self: *Self, input_event: Input, render_ctx: *const RenderCtx) !Conclusion {
-    if (self.hidden) {
+    if (self.hidden or input_event.ncinput.evtype == c.NCTYPE_RELEASE) {
         return .Noop;
     }
 
@@ -159,6 +178,34 @@ pub fn handleInputEvent(self: *Self, input_event: Input, render_ctx: *const Rend
 
     switch (key) {
         'q' => return .Quit,
+
+        'j', c.NCKEY_DOWN, 'k', c.NCKEY_UP => {
+            self.input_bucket.clear();
+            if (key == 'j' or key == c.NCKEY_DOWN) {
+                if (self.selected + 1 < self.entries.items.len) self.selected += 1;
+            } else if (self.selected > 0) {
+                self.selected -= 1;
+            }
+            const visible_rows: usize = @intCast(render_ctx.term_rows -| 10);
+            if (visible_rows > 0 and self.selected >= self.scroll_top + visible_rows) {
+                self.scroll_top = self.selected - visible_rows + 1;
+            } else if (self.selected < self.scroll_top) {
+                self.scroll_top = self.selected;
+            }
+            self.initial_render_done = false;
+            return .Claimed;
+        },
+
+        c.NCKEY_ENTER, '\r', '\n' => {
+            self.input_bucket.clear();
+            if (self.entries.items.len == 0) return .Claimed;
+            const id = self.entries.items[self.selected].id;
+            const argv: []const []const u8 = switch (self.backend) {
+                .jj => &.{ "jj", "diff", "-r", id, "--tool=:git", "--color=never" },
+                .git => &.{ "git", "show", "--format=", "--first-parent", "-m", "--no-ext-diff", "--no-color", id },
+            };
+            return try self.openDiff(render_ctx, argv);
+        },
 
         c.NCKEY_RESIZE => {
             self.initial_render_done = false;
@@ -186,23 +233,25 @@ pub fn handleInputEvent(self: *Self, input_event: Input, render_ctx: *const Rend
                     count += 1;
 
                 if (count >= open_diff.len) {
-                    const diff_window = try self.alloc.create(DiffWindow);
-                    errdefer self.alloc.destroy(diff_window);
                     const argv: []const []const u8 = switch (self.backend) {
                         .jj => &.{ "jj", "diff", "--tool=:git", "--color", "never" },
                         .git => &.{ "git", "diff", "HEAD", "--no-ext-diff", "--no-color" },
                     };
-                    diff_window.* = try DiffWindow.init(self.alloc, self.io, render_ctx, argv);
-
-                    self.hiding = true;
-
-                    return .{ .Mount = .{ .component = diff_window.initInterface(), .hide = true } };
+                    return try self.openDiff(render_ctx, argv);
                 }
             }
         },
     }
 
     return .Noop;
+}
+
+fn openDiff(self: *Self, render_ctx: *const RenderCtx, argv: []const []const u8) !Conclusion {
+    const diff_window = try self.alloc.create(DiffWindow);
+    errdefer self.alloc.destroy(diff_window);
+    diff_window.* = try DiffWindow.init(self.alloc, self.io, render_ctx, argv);
+    self.hiding = true;
+    return .{ .Mount = .{ .component = diff_window.initInterface(), .hide = true } };
 }
 
 pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
@@ -254,13 +303,23 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
         if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
         try putClipped(stdplane, 5, 3, content_cols, if (self.backend == .jj) "RECENT REVISIONS  /  @ to ancestors" else "RECENT COMMITS  /  HEAD to ancestors");
 
-        var commits = std.mem.splitScalar(u8, self.history, '\n');
+        const visible_rows: usize = @intCast(rows -| 10);
+        if (visible_rows > 0 and self.selected >= self.scroll_top + visible_rows) {
+            self.scroll_top = self.selected - visible_rows + 1;
+        }
         var row: c_uint = 7;
-        var index: usize = 0;
-        while (row < rows -| 3) : (row += 1) {
-            const line = commits.next() orelse break;
-            if (line.len == 0) break;
-            const separator = std.mem.indexOfScalar(u8, line, '\t') orelse continue;
+        var index: usize = self.scroll_top;
+        while (row < rows -| 3 and index < self.entries.items.len) : ({
+            row += 1;
+            index += 1;
+        }) {
+            const entry = self.entries.items[index];
+            const is_selected = index == self.selected;
+            if (is_selected) {
+                c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
+                if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
+                try putClipped(stdplane, @intCast(row), 1, content_cols, ">");
+            }
 
             if (index == 0) {
                 c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
@@ -271,20 +330,24 @@ pub fn render(self: *Self, render_ctx: *const RenderCtx) !void {
                 if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
                 try putClipped(stdplane, @intCast(row), 3, content_cols, "  |");
             }
-            try putClipped(stdplane, @intCast(row), 10, content_cols, line[0..separator]);
-            if (c.ncplane_set_fg_rgb8(stdplane, 0xeb, 0xdb, 0xb2) < 0) return error.SetColorFailed;
-            try putClipped(stdplane, @intCast(row), 20, content_cols, line[separator + 1 ..]);
-            index += 1;
+            if (is_selected) {
+                c.ncplane_set_styles(stdplane, c.NCSTYLE_BOLD);
+                if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
+            }
+            try putClipped(stdplane, @intCast(row), 10, content_cols, entry.id[0..@min(8, entry.id.len)]);
+            if (!is_selected and c.ncplane_set_fg_rgb8(stdplane, 0xeb, 0xdb, 0xb2) < 0) return error.SetColorFailed;
+            try putClipped(stdplane, @intCast(row), 20, content_cols, entry.subject);
         }
 
-        if (index == 0 and self.history.len == 0) {
+        if (self.entries.items.len == 0) {
             if (c.ncplane_set_fg_rgb8(stdplane, 0x88, 0x88, 0x88) < 0) return error.SetColorFailed;
             try putClipped(stdplane, 7, 3, content_cols, "No commits yet");
         }
 
         c.ncplane_set_styles(stdplane, c.NCSTYLE_NONE);
         if (c.ncplane_set_fg_rgb8(stdplane, 0xff, 0xd8, 0x66) < 0) return error.SetColorFailed;
-        try putClipped(stdplane, @intCast(rows - 1), 3, cols, if (cols < 65) "Space d f  diff    q  quit" else "Space d f  working tree diff     q  quit");
+        if (cols < 65 and rows >= 12) try putClipped(stdplane, @intCast(rows - 2), 3, cols, "Space d f  working tree diff");
+        try putClipped(stdplane, @intCast(rows - 1), 3, cols, if (cols < 65) "j/k select  Enter diff  q quit" else "j/k select  Enter commit diff  Space d f working tree diff  q quit");
         self.initial_render_done = true;
     }
 
