@@ -29,7 +29,6 @@ pub const Backend = enum {
 
 pub const Opts = struct {
     backend: Backend,
-    start_args: ?[]const []const u8 = null,
 };
 
 pub fn init(alloc: std.mem.Allocator, rx: Receiver, opts: Opts) Self {
@@ -156,6 +155,8 @@ fn handleInputEvent(self: *Self, nc_ctx: *c.notcurses, evt: InputEvent) !void {
 
                 if (i > 0) {
                     try self.components.items[i - 1].wake();
+                } else if (self.components.items.len == 0) {
+                    return error.Terminate;
                 }
 
                 break;

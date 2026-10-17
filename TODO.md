@@ -1,6 +1,7 @@
 # TODO
 - [ ] Refine arg sets
     - [x] No arguments open the history splash. Support jj and Git; prefer jj in a colocated repository. Mercurial is not supported.
+    - [x] Pass opaque arguments to the detected backend's diff command and open that diff directly.
     - [ ] Define direct-diff arguments, help/usage, and which revisions/path filters (if any) belong in this item.
     - [ ] Choose TOML or ZON and specify a minimal, read-only config schema/location for the chosen startup and diff defaults. Define CLI > config > detected/default precedence; leave writing settings back to disk for the separate Persistent config item.
     - [ ] Parse args after the executable name into typed options. Validate unknown/missing/conflicting arguments and show help/errors with meaningful exit statuses before repository detection or notcurses initialization.

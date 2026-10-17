@@ -55,6 +55,15 @@ On the splash screen, press `j` / `k` (or `↓` / `↑`) to select a revision an
 Press <kbd>Space</kbd> <kbd>d</kbd> <kbd>f</kbd> on the splash screen to open the working-copy diff instead.
 For Git, this compares the working tree and index against `HEAD` (untracked files are not included).
 
+Pass diff arguments to open the diff directly instead of the splash. ddf forwards them to the detected backend's `jj diff` or `git diff` command:
+
+```sh
+ddf -r @-                   # jj: parent revision's diff
+ddf HEAD~1 HEAD -- src/     # Git: changes between commits, limited to src/
+```
+
+In direct-diff mode, `q` closes ddf.
+
 | Mode | Keys | Action |
 | --- | --- | --- |
 | Normal | `j` / `k`, `↓` / `↑` | Move down / up |

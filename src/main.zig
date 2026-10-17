@@ -33,6 +33,7 @@ const MSG: []const u8 =
     \\Examples:
     \\  ddf           Browse recent revisions
     \\  ddf -r @-     Review a jj revision's diff
+    \\  ddf HEAD~1 HEAD -- src/   Review a Git commit range within src/
     \\
 ;
 
@@ -150,26 +151,50 @@ const Opts = struct {
 
         try input_parser.listen(io);
 
-        const start_args: ?[]const []const u8 = if (self.raw_args) |args| args else null;
-        var app = App.init(alloc, channel.rx, .{
-            .backend = self.backend.?,
-            .start_args = start_args,
-        });
+        var app = App.init(alloc, channel.rx, .{ .backend = self.backend.? });
         defer app.deinit(io);
-        // TODO: delegate this to the instantiation of App based on the starting arg
-        // i.e. if there is no starting arg, we display a plain starting screen
-        // if there is one, we display that instead
-        const Splash = @import("components/Splash.zig");
-        const splash = try alloc.create(Splash);
-        splash.* = Splash.init(alloc, io, self.backend.?) catch |err| {
-            alloc.destroy(splash);
-            return err;
-        };
-        app.components.append(alloc, splash.initInterface()) catch |err| {
-            splash.deinit();
-            alloc.destroy(splash);
-            return err;
-        };
+        if (self.opaque_args.len == 0) {
+            const Splash = @import("components/Splash.zig");
+            const splash = try alloc.create(Splash);
+            splash.* = Splash.init(alloc, io, self.backend.?) catch |err| {
+                alloc.destroy(splash);
+                return err;
+            };
+            app.components.append(alloc, splash.initInterface()) catch |err| {
+                splash.deinit();
+                alloc.destroy(splash);
+                return err;
+            };
+        } else {
+            var argv: std.ArrayList([]const u8) = .empty;
+            defer argv.deinit(alloc);
+            try argv.appendSlice(alloc, switch (self.backend.?) {
+                .jj => &.{ "jj", "diff", "--tool=:git", "--color=never" },
+                .git => &.{ "git", "diff", "--no-ext-diff", "--no-color" },
+            });
+            for (self.opaque_args) |arg| try argv.append(alloc, arg);
+
+            var rows: c_uint = 0;
+            var cols: c_uint = 0;
+            if (c.notcurses_refresh(nc_ctx, &rows, &cols) < 0) return error.RefreshFailed;
+            const render_ctx: protocol.RenderCtx = .{
+                .term_rows = rows,
+                .term_cols = cols,
+                .nc_ctx = nc_ctx,
+            };
+
+            const DiffWindow = @import("components/diff_window/root.zig").DiffWindow;
+            const diff = try alloc.create(DiffWindow);
+            diff.* = DiffWindow.init(alloc, io, &render_ctx, argv.items) catch |err| {
+                alloc.destroy(diff);
+                return err;
+            };
+            app.components.append(alloc, diff.initInterface()) catch |err| {
+                diff.deinit();
+                alloc.destroy(diff);
+                return err;
+            };
+        }
 
         try app.startAndAwait(io, nc_ctx);
     }
