@@ -51,7 +51,8 @@ flake applies.
 ## Usage
 
 Run `ddf` from inside a jj or Git repository to see the recent history leading up to `@` or `HEAD`.
-Press <kbd>Space</kbd> <kbd>d</kbd> <kbd>f</kbd> on the splash screen to open the working-copy diff.
+On the splash screen, press `j` / `k` (or `↓` / `↑`) to select a revision and `Enter` to review its patch against its parent (the first parent for Git merges). Press `q` in the diff to return to the selected revision.
+Press <kbd>Space</kbd> <kbd>d</kbd> <kbd>f</kbd> on the splash screen to open the working-copy diff instead.
 For Git, this compares the working tree and index against `HEAD` (untracked files are not included).
 
 | Mode | Keys | Action |
