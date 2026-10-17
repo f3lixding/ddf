@@ -15,6 +15,29 @@ pub const std_options: std.Options = .{
     .logFn = logging.logFn,
 };
 
+const MSG: []const u8 =
+    \\ddf — review diffs in your terminal
+    \\
+    \\Usage:
+    \\  ddf [OPTIONS] [DIFF_ARGS...]
+    \\
+    \\With no diff arguments, show recent history. With diff arguments, open
+    \\the diff directly and pass those arguments to the selected backend.
+    \\
+    \\Options:
+    \\  -h, --help    Show this help and exit
+    \\
+    \\Diff arguments are interpreted by jj diff or git diff. ddf detects the
+    \\repository automatically; in a colocated repository, it prefers jj.
+    \\
+    \\Examples:
+    \\  ddf           Browse recent revisions
+    \\  ddf -r @-     Review a jj revision's diff
+    \\
+;
+
+const NativeArgs = enum { help };
+
 const Opts = struct {
     const Self = @This();
 
@@ -23,7 +46,9 @@ const Opts = struct {
         .{ .git, &.{ "git", "rev-parse", "--show-toplevel" } },
     };
 
-    args: ?[]const [:0]const u8 = null,
+    native_args: ?NativeArgs = null,
+    raw_args: ?[]const [:0]const u8 = null,
+    opaque_args: []const [:0]const u8 = &.{},
     backend: ?Backend = null,
 
     pub fn init(alloc: std.mem.Allocator, io: std.Io) Self {
@@ -48,20 +73,50 @@ const Opts = struct {
     }
 
     pub fn deinit(self: Self, alloc: std.mem.Allocator) void {
-        if (self.args) |args| {
+        if (self.raw_args) |args| {
             alloc.free(args);
         }
     }
 
-    pub fn execute(self: Self, alloc: std.mem.Allocator, io: std.Io) !void {
-        if (self.backend == null) {
-            var buf: [256]u8 = undefined;
-            const stdout = std.Io.File.stdout();
-            var stdout_writer = std.Io.File.writer(stdout, io, &buf);
-            const errMsgWriter = &stdout_writer.interface;
+    pub fn processArgs(self: *Self, args: []const [:0]const u8) void {
+        var i: usize = 1; // skips the executable name
 
-            try errMsgWriter.writeAll("No jj or git repository detected in current directory\n");
-            try errMsgWriter.flush();
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+
+            // TODO: add more parsing for when we add more native args
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                self.native_args = .help;
+            } else {
+                break;
+            }
+        }
+
+        self.raw_args = args;
+        self.opaque_args = args[i..];
+    }
+
+    pub fn execute(self: Self, alloc: std.mem.Allocator, io: std.Io) !void {
+        var buf: [256]u8 = undefined;
+        const stdout = std.Io.File.stdout();
+        var stdout_writer = std.Io.File.writer(stdout, io, &buf);
+        const msg_writer = &stdout_writer.interface;
+
+        if (self.native_args) |native_args| {
+            switch (native_args) {
+                .help => {
+                    // Display help text
+                    try msg_writer.writeAll(MSG);
+                    try msg_writer.flush();
+                },
+            }
+
+            return;
+        }
+
+        if (self.backend == null) {
+            try msg_writer.writeAll("No jj or git repository detected in current directory\n");
+            try msg_writer.flush();
 
             return;
         }
@@ -95,7 +150,7 @@ const Opts = struct {
 
         try input_parser.listen(io);
 
-        const start_args: ?[]const []const u8 = if (self.args) |args| args else null;
+        const start_args: ?[]const []const u8 = if (self.raw_args) |args| args else null;
         var app = App.init(alloc, channel.rx, .{
             .backend = self.backend.?,
             .start_args = start_args,
@@ -140,7 +195,7 @@ pub fn main(init: std.process.Init) !void {
         try errMsgWriter.writeAll("Failed to retrieve args slice");
         return;
     };
-    opts.args = args_slice;
+    opts.processArgs(args_slice);
 
     const DebugAllocator = std.heap.DebugAllocator(.{
         .stack_trace_frames = 20,

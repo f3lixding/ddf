@@ -10,6 +10,7 @@
     - [ ] Update README usage and requirements to match the shipped CLI, config format, and actual backend support.
 - [ ] Randomize gifs (we would probably need to further abstract it because we might need to size them up differently)
 - [ ] Context expansion
+- [ ] User defined scm / syntax highlighting rules
 - [ ] Pre-comment line selection validation
 - [ ] Optimize SPSC (caching tail / head + false sharing prevention. For more detail see https://debasishg.github.io/blog/part1-cache-conscious-data-layout-in-rust/)
 - [ ] File picker (but only for files changed)
