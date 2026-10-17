@@ -250,4 +250,5 @@ test {
     _ = @import("components/diff.zig");
     _ = @import("components/syntax_highlighter.zig");
     _ = @import("TreeSitter.zig");
+    _ = @import("config.zig");
 }
