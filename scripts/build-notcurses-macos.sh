@@ -4,7 +4,7 @@ set -euo pipefail
 # Build notcurses on macOS with the tmux crash patch used by flake.nix.
 #
 # Requirements:
-#   brew install cmake pkg-config ncurses libunistring libdeflate
+#   brew install cmake pkg-config ncurses libunistring libdeflate ffmpeg
 #
 # Usage:
 #   ./scripts/build-notcurses-macos.sh
@@ -21,7 +21,7 @@ BUILD_ROOT="${BUILD_DIR:-$ROOT_DIR/.deps/notcurses-build}"
 PREFIX="${PREFIX:-$ROOT_DIR/.deps/notcurses}"
 SRC_DIR="$BUILD_ROOT/src"
 CMAKE_BUILD_DIR="$BUILD_ROOT/cmake-build"
-PATCH_URL="https://github.com/dankamongmen/notcurses/pull/2926/changes/9e436185ff2da838e3d5f2d119c192537cbfab53.patch"
+PATCH_URL="https://github.com/dankamongmen/notcurses/commit/9e436185ff2da838e3d5f2d119c192537cbfab53.patch"
 PATCH_FILE="$BUILD_ROOT/tmux-crash.patch"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -46,6 +46,7 @@ BREW_PREFIX="$(brew --prefix)"
 NCURSES_PREFIX="$(brew --prefix ncurses)"
 LIBUNISTRING_PREFIX="$(brew --prefix libunistring)"
 LIBDEFLATE_PREFIX="$(brew --prefix libdeflate)"
+FFMPEG_PREFIX="$(brew --prefix ffmpeg)"
 
 mkdir -p "$BUILD_ROOT"
 
@@ -55,7 +56,7 @@ if [[ ! -d "$SRC_DIR/.git" ]]; then
     "$SRC_DIR"
 fi
 
-curl -L "$PATCH_URL" -o "$PATCH_FILE"
+curl -fsSL "$PATCH_URL" -o "$PATCH_FILE"
 
 pushd "$SRC_DIR" >/dev/null
 if ! git apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
@@ -67,14 +68,21 @@ fi
 popd >/dev/null
 
 # Homebrew keeps ncurses keg-only on many macOS installs, so make discovery explicit.
-export PKG_CONFIG_PATH="$NCURSES_PREFIX/lib/pkgconfig:$LIBUNISTRING_PREFIX/lib/pkgconfig:$LIBDEFLATE_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-export CPPFLAGS="-I$NCURSES_PREFIX/include -I$LIBUNISTRING_PREFIX/include -I$LIBDEFLATE_PREFIX/include ${CPPFLAGS:-}"
-export LDFLAGS="-L$NCURSES_PREFIX/lib -L$LIBUNISTRING_PREFIX/lib -L$LIBDEFLATE_PREFIX/lib ${LDFLAGS:-}"
+export PKG_CONFIG_PATH="$NCURSES_PREFIX/lib/pkgconfig:$LIBUNISTRING_PREFIX/lib/pkgconfig:$LIBDEFLATE_PREFIX/lib/pkgconfig:$FFMPEG_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export CPPFLAGS="-I$NCURSES_PREFIX/include -I$LIBUNISTRING_PREFIX/include -I$LIBDEFLATE_PREFIX/include -I$FFMPEG_PREFIX/include ${CPPFLAGS:-}"
+export LDFLAGS="-L$NCURSES_PREFIX/lib -L$LIBUNISTRING_PREFIX/lib -L$LIBDEFLATE_PREFIX/lib -L$FFMPEG_PREFIX/lib ${LDFLAGS:-}"
 
 cmake -S "$SRC_DIR" -B "$CMAKE_BUILD_DIR" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-  -DCMAKE_PREFIX_PATH="$NCURSES_PREFIX;$LIBUNISTRING_PREFIX;$LIBDEFLATE_PREFIX;$BREW_PREFIX" \
+  -DCMAKE_PREFIX_PATH="$NCURSES_PREFIX;$LIBUNISTRING_PREFIX;$LIBDEFLATE_PREFIX;$FFMPEG_PREFIX;$BREW_PREFIX" \
+  -DCMAKE_C_FLAGS="-I$LIBDEFLATE_PREFIX/include ${CFLAGS:-}" \
+  -DBUILD_TESTING=OFF \
+  -DBUILD_EXECUTABLES=OFF \
+  -DBUILD_FFI_LIBRARY=OFF \
+  -DUSE_CXX=OFF \
+  -DUSE_STATIC=OFF \
+  -DUSE_PANDOC=OFF \
   ${CMAKE_EXTRA_ARGS:-}
 
 cmake --build "$CMAKE_BUILD_DIR" --parallel "$(sysctl -n hw.ncpu)"
