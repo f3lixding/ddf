@@ -29,7 +29,7 @@
           if pkgs.stdenv.isLinux then
             "${pkgs.stdenv.hostPlatform.system}-gnu"
           else
-            pkgs.stdenv.hostPlatform.system;
+            pkgs.lib.replaceStrings [ "-darwin" ] [ "-macos" ] pkgs.stdenv.hostPlatform.system;
 
         # This is so that notcurses doesn't crash when launched from tmux
         notcursesPatched = pkgs.notcurses.overrideAttrs (old: {
@@ -53,11 +53,12 @@
           pkgs.ncurses
           pkgs.libunistring
           pkgs.libdeflate
-          pkgs.glibc
+        ]
+        ++ treeSitterDeps
+        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
           pkgs.glibc
           pkgs.stdenv.cc.cc.lib
-        ]
-        ++ treeSitterDeps;
+        ];
 
         binName = "ddf";
       in
@@ -81,7 +82,7 @@
               "-Drpath=${pkgs.lib.makeLibraryPath librariesToInclude}"
             ];
 
-            postInstall = ''
+            postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
               ${pkgs.patchelfUnstable}/bin/patchelf \
                 --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} \
                 $out/bin/${binName}
@@ -94,33 +95,42 @@
             with pkgs;
             [
               cmake
-              gcc
               zig
               zls
               notcursesPatched
               pkg-config
+
+              (writeShellScriptBin "zig-build" (
+                if stdenv.isLinux then ''
+                  set -euo pipefail
+
+                  NC_DEV_LOADER=${stdenv.cc.bintools.dynamicLinker}
+                  NC_DEV_LIBRARY_PATH=${lib.makeLibraryPath librariesToInclude}
+
+                  zig build \
+                    -Drpath="$NC_DEV_LIBRARY_PATH" \
+                    -Dinterpreter="$NC_DEV_LOADER" \
+                    -Dpatchelf=${patchelfUnstable}/bin/patchelf \
+                    -Dbin-name=${binName} \
+                    "$@"
+                  ${patchelfUnstable}/bin/patchelf \
+                    --set-interpreter "$NC_DEV_LOADER" \
+                    zig-out/bin/${binName}
+                '' else ''
+                  exec zig build \
+                    -Drpath=${lib.makeLibraryPath librariesToInclude} \
+                    -Dbin-name=${binName} \
+                    "$@"
+                ''
+              ))
+            ]
+            ++ lib.optionals stdenv.isLinux [
+              gcc
               patchelfUnstable
-
-              (writeShellScriptBin "zig-build" ''
-                set -euo pipefail
-
-                NC_DEV_LOADER=${stdenv.cc.bintools.dynamicLinker}
-                NC_DEV_LIBRARY_PATH=${lib.makeLibraryPath librariesToInclude}
-
-                zig build \
-                  -Drpath="$NC_DEV_LIBRARY_PATH" \
-                  -Dinterpreter="$NC_DEV_LOADER" \
-                  -Dpatchelf=${patchelfUnstable}/bin/patchelf \
-                  -Dbin-name=${binName} \
-                  "$@"
-                ${patchelfUnstable}/bin/patchelf \
-                  --set-interpreter "$NC_DEV_LOADER" \
-                  zig-out/bin/${binName}
-              '')
             ]
             ++ treeSitterDeps;
 
-          shellHook = ''
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
             export NC_DEV_LOADER=${pkgs.stdenv.cc.bintools.dynamicLinker}
             export NC_DEV_LIBRARY_PATH=${pkgs.lib.makeLibraryPath librariesToInclude}
           '';

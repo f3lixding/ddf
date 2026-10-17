@@ -42,8 +42,8 @@ zig-build            # binary at ./zig-out/bin/ddf
 zig-build test       # run unit tests
 ```
 
-Inside the dev shell, use `zig-build` rather than `zig build`. The wrapper sets the rpath and ELF
-interpreter so the binary runs against Nix's libraries.
+Inside the dev shell, use `zig-build` rather than `zig build`. The wrapper sets the rpath so the
+binary finds Nix's libraries; on Linux, it also sets the ELF interpreter.
 
 On macOS without Nix, `scripts/build-notcurses-macos.sh` builds notcurses with the tmux fix that the
 flake applies.
