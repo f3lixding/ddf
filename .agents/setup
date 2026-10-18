@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Amp orb setup: installs single-user Nix and realizes the flake dev shell
-# (zig 0.16, patched notcurses, tree-sitter, patchelf, zig-build), then makes
+# (zig 0.17, patched notcurses, tree-sitter, patchelf, zig-build), then makes
 # that dev shell the environment of login shells started in this repo.
 set -euo pipefail
 
@@ -47,7 +47,7 @@ if ! grep -Fqx "$agents_marker" "$agents_md" 2>/dev/null; then
   cat >> "$agents_md" <<'EOF'
 
 # ddf build
-- Login shells in the repo load the Nix flake dev shell (zig 0.16, notcurses, tree-sitter).
+- Login shells in the repo load the Nix flake dev shell (zig 0.17, notcurses, tree-sitter).
 - Build and test with `zig-build` / `zig-build test` (not plain `zig build`): the wrapper sets the rpath and ELF interpreter so binaries run against Nix's glibc.
 EOF
 fi

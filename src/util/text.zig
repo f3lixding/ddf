@@ -127,7 +127,7 @@ pub fn putEgcSegment(plane: *c.ncplane, y: c_int, x: c_int, text: []const u8) !v
         if (ux + 1 >= cols) return;
 
         const cp_len = utf8CodepointLen(text[i..]);
-        var egc_buf: [8:0]u8 = [_:0]u8{0} ** 8;
+        var egc_buf: [8:0]u8 = @splat(0);
         @memcpy(egc_buf[0..cp_len], text[i .. i + cp_len]);
 
         var bytes_written: usize = 0;

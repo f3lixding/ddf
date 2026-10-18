@@ -1,8 +1,10 @@
 # ddf
 
-A keyboard-driven terminal UI for reviewing your working-copy changes in
-[jj](https://github.com/jj-vcs/jj) or Git. ddf shows the current diff with syntax highlighting.
+A keyboard-driven terminal UI for browsing history and reviewing diffs in
+[jj](https://github.com/jj-vcs/jj) or Git. ddf shows diffs with syntax highlighting.
 You can leave comments on lines or ranges, then copy them all as one message for a reviewer or a coding agent.
+
+![Browse commits on the splash screen with the animated cat](docs/media/demo.gif)
 
 Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 [tree-sitter](https://tree-sitter.github.io/).
@@ -16,6 +18,9 @@ Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 - `yy` copies all comments to the clipboard as formatted text (`wl-copy`, with an OSC 52 fallback)
 - Splash screen listing recent revisions from jj `@` or commits from Git `HEAD`, with the animated cat on the right in roomy terminals
 
+### Screenshots
+
+
 | Commenting on a change | Searching |
 | --- | --- |
 | ![Comment on a range](docs/media/review.png) | ![Search](docs/media/search.png) |
@@ -24,7 +29,7 @@ Built with Zig, [notcurses](https://github.com/dankamongmen/notcurses) and
 
 - Linux or macOS
 - [`jj`](https://github.com/jj-vcs/jj) or `git` on your `PATH`, in a repository of that type. In a colocated jj/Git repository, ddf uses jj.
-- Zig 0.16, notcurses and tree-sitter. The Nix flake provides all three.
+- Zig 0.17, notcurses and tree-sitter. The Nix flake provides all three.
 
 ## Building
 

@@ -6,8 +6,8 @@ pub fn LeakyBucket(comptime T: type) type {
     switch (type_info) {
         .@"struct" => |s| {
             var has_field = false;
-            for (s.fields) |field| {
-                if (std.mem.eql(u8, field.name, "timestamp")) {
+            for (s.field_names) |field_name| {
+                if (std.mem.eql(u8, field_name, "timestamp")) {
                     has_field = true;
                     break;
                 }

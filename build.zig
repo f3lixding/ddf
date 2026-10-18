@@ -3,9 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const c_bindings = makeCBindings(b, target, optimize);
 
     const options = b.addOptions();
-    options.addOption(bool, "use_testing_allocator", optimize == .Debug);
+    options.addOption(bool, "use_testing_allocator", optimize == .debug);
 
     const bin_name = b.option([]const u8, "bin-name", "bin name") orelse "ddf";
     const rpaths = b.option([]const u8, "rpath", "rpath to add");
@@ -29,6 +30,7 @@ pub fn build(b: *std.Build) void {
     exe.use_lld = false;
     exe.pie = true;
     exe.root_module.addOptions("build_options", options);
+    exe.root_module.addImport("c", c_bindings);
 
     linkNc(exe);
     linkTreeSitter(exe, b);
@@ -50,6 +52,7 @@ pub fn build(b: *std.Build) void {
         });
         render_bin.use_lld = false;
         render_bin.pie = true;
+        render_bin.root_module.addImport("c", c_bindings);
 
         linkNc(render_bin);
         linkTreeSitter(render_bin, b);
@@ -76,6 +79,7 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.use_lld = false;
     unit_tests.pie = true;
+    unit_tests.root_module.addImport("c", c_bindings);
 
     linkNc(unit_tests);
     linkTreeSitter(unit_tests, b);
@@ -94,6 +98,32 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+}
+
+fn makeCBindings(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.Optimize,
+) *std.Build.Module {
+    const bindings_header = b.addWriteFiles().add("c_bindings.h",
+        \\#include <locale.h>
+        \\#include <stdio.h>
+        \\#include <time.h>
+        \\#include <wchar.h>
+        \\#include <notcurses/notcurses.h>
+        \\#include <notcurses/direct.h>
+        \\#include <tree_sitter/api.h>
+    );
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = bindings_header,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    translate_c.defineCMacro("_XOPEN_SOURCE", "700");
+    translate_c.linkSystemLibrary("notcurses", .{ .use_pkg_config = .yes });
+    translate_c.linkSystemLibrary("tree-sitter", .{ .use_pkg_config = .yes });
+    return translate_c.createModule();
 }
 
 fn linkNc(bin: *std.Build.Step.Compile) void {

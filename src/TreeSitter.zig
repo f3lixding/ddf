@@ -1,8 +1,6 @@
 const std = @import("std");
 
-pub const ts = @cImport({
-    @cInclude("tree_sitter/api.h");
-});
+pub const ts = @import("c");
 
 // Note that these are already embedded in the bin.
 // See the build script for "addTreeSitterGrammer"
@@ -30,9 +28,9 @@ pub const Language = enum {
     }
 
     pub fn getHlQuery(self: Language) []const u8 {
-        inline for (@typeInfo(Language).@"enum".fields) |field| {
-            if (self == @field(Language, field.name)) {
-                return @field(Queries, field.name ++ "_hl_query");
+        inline for (@typeInfo(Language).@"enum".field_names) |field_name| {
+            if (self == @field(Language, field_name)) {
+                return @field(Queries, field_name ++ "_hl_query");
             }
         }
 

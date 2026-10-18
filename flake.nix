@@ -22,11 +22,11 @@
           overlays = [ zig-overlay.overlays.default ];
         };
 
-        zig = pkgs.zigpkgs."0.16.0";
-        zls = pkgs.zls_0_16;
+        zig = pkgs.zigpkgs."0.17.0";
+        zls = pkgs.zls_0_17;
         # this is needed because this affects libc
         zigTarget =
-          if pkgs.stdenv.isLinux then
+          if pkgs.stdenv.hostPlatform.isLinux then
             "${pkgs.stdenv.hostPlatform.system}-gnu"
           else
             pkgs.lib.replaceStrings [ "-darwin" ] [ "-macos" ] pkgs.stdenv.hostPlatform.system;
@@ -55,7 +55,7 @@
           pkgs.libdeflate
         ]
         ++ treeSitterDeps
-        ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
           pkgs.glibc
           pkgs.stdenv.cc.cc.lib
         ];
@@ -82,7 +82,7 @@
               "-Drpath=${pkgs.lib.makeLibraryPath librariesToInclude}"
             ];
 
-            postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               ${pkgs.patchelfUnstable}/bin/patchelf \
                 --set-interpreter ${pkgs.stdenv.cc.bintools.dynamicLinker} \
                 $out/bin/${binName}
@@ -101,7 +101,7 @@
               pkg-config
 
               (writeShellScriptBin "zig-build" (
-                if stdenv.isLinux then ''
+                if stdenv.hostPlatform.isLinux then ''
                   set -euo pipefail
 
                   NC_DEV_LOADER=${stdenv.cc.bintools.dynamicLinker}
@@ -124,13 +124,13 @@
                 ''
               ))
             ]
-            ++ lib.optionals stdenv.isLinux [
+            ++ lib.optionals stdenv.hostPlatform.isLinux [
               gcc
               patchelfUnstable
             ]
             ++ treeSitterDeps;
 
-          shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export NC_DEV_LOADER=${pkgs.stdenv.cc.bintools.dynamicLinker}
             export NC_DEV_LIBRARY_PATH=${pkgs.lib.makeLibraryPath librariesToInclude}
           '';
